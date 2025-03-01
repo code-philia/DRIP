@@ -35,7 +35,6 @@ def run_eval(
     pass_expert_labels
 ):
     questions = load_questions(question_file, question_begin, question_end)
-    # random shuffle the questions to balance the loading
     random.shuffle(questions)
     get_answers_func = get_model_answers
 
@@ -151,7 +150,7 @@ def get_model_answers(
                 output = output.strip()
 
             except RuntimeError as e:
-                print("ERROR question ID: ", question["question_id"])
+                print(f"ERROR question ID: {e}", question["question_id"])
                 output = "ERROR"
 
             conv.update_last_message(output)
@@ -223,7 +222,6 @@ if __name__ == "__main__":
     parser.add_argument("--question-end", type=int, help="A debug option. The end index of questions.")
     parser.add_argument("--answer-file", type=str, help="The output answer file.")
     parser.add_argument("--max-new-token", type=int, default=512, help="The maximum number of new generated tokens.",)
-    parser.add_argument('--device', type=str, default='1')
 
     parser.add_argument('--pass_expert_labels', default=False, action='store_true')
     parser.add_argument('--customized_model_class', type=str, default='')
@@ -234,8 +232,7 @@ if __name__ == "__main__":
     print(f"Output to {answer_file}")
 
     model, tokenizer, frontend_delimiters, training_attacks = load_lora_model(args.model_path,
-                                                                              customized_model_class=args.customized_model_class,
-                                                                              device=args.device)
+                                                                              customized_model_class=args.customized_model_class)
     inst_delm = DELIMITERS[frontend_delimiters][0]
     resp_delm = DELIMITERS[frontend_delimiters][2]
     fastchat.conversation.register_conv_template(
