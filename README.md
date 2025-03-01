@@ -26,7 +26,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port=29951 train.py
 
 # Adv Train Struq
 ```bash
-python -m torch.distributed.run --nproc_per_node=4 --master_port=29951 struq_lora.py
+python -m torch.distributed.run --nproc_per_node=4 --master_port=29951 train_struq_lora.py
 --model_name_or_path meta-llama/Llama-3.2-1B
 --data_path datasets/alpaca_data_cleaned.json
 --output_dir meta-llama/Llama-3.2-1B-SpclSpclSpcl_NaiveCompletion-struq
