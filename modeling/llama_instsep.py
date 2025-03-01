@@ -385,11 +385,17 @@ class LlamaForCausalLMMoE(transformers.LlamaForCausalLM):
         # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
         # Exception 1: when passing input_embeds, input_ids may be missing entries
         # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
+        expert_labels = None
+        if "expert_labels" in kwargs:
+            expert_labels = kwargs["expert_labels"]
+
         if past_key_values is not None:
             if inputs_embeds is not None:  # Exception 1
                 input_ids = input_ids[:, -cache_position.shape[0] :]
+                if expert_labels is not None:
+                    expert_labels = expert_labels[:, -cache_position.shape[0] :] # ensure correct slicing
             elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
-                input_ids = input_ids[:, cache_position]
+                input_ids = input_ids[:, cache_position] # (batch_size, 1)
 
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
@@ -397,6 +403,8 @@ class LlamaForCausalLMMoE(transformers.LlamaForCausalLM):
             position_ids.masked_fill_(attention_mask == 0, 1)
             if past_key_values:
                 position_ids = position_ids[:, -input_ids.shape[1] :]
+                if expert_labels is not None:
+                    expert_labels = expert_labels[:, -input_ids.shape[1] :] # fixme: the expert label will inherit the last token's expert label
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and cache_position[0] == 0:
@@ -404,8 +412,8 @@ class LlamaForCausalLMMoE(transformers.LlamaForCausalLM):
         else:
             model_inputs = {"input_ids": input_ids.contiguous()}  # `contiguous()` needed for compilation use cases
 
-        if "expert_labels" in kwargs:
-            model_inputs["expert_labels"] = kwargs["expert_labels"]  # Pass expert_labels if provided
+        if expert_labels is not None:
+            model_inputs["expert_labels"] = expert_labels
 
         model_inputs.update(
             {
