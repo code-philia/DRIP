@@ -35,6 +35,13 @@ class LlamaMLPMoE(transformers.models.llama.modeling_llama.LlamaMLP):
         super().__init__(config)
         self.apply_intermediate_shifts = config.apply_intermediate_shifts
         self.intermediate_shifts = nn.Embedding(config.num_experts, config.hidden_size)  # (num_experts, hidden_size)
+        self.custom_initialize()
+
+    def custom_initialize(self):
+        for i in range(self.intermediate_shifts.weight.size(0)):
+            mean = 0.1 * i  # Example: varying mean
+            std = 0.05 + 0.01 * i  # Example: varying std
+            nn.init.normal_(self.intermediate_shifts.weight[i], mean=mean, std=std)
 
     def forward(self, x, expert_label):
         if self.config.pretraining_tp > 1:
