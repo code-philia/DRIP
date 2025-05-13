@@ -1,7 +1,6 @@
-from config import IGNORE_ATTACK_SENTENCES, PROMPT_FORMAT, DEFAULT_TOKENS, DELIMITERS, TEST_INJECTED_WORD, \
-    TEST_INJECTED_PROMPT, TEST_INJECTED_PROMPT_SPANISH, TEXTUAL_DELM_TOKENS, FILTERED_TOKENS, \
-    TEST_INJECTED_PROMPT_CHINESE, SPECIAL_DELM_TOKENS
-from struq import format_with_other_delimiters, _tokenize_fn, jload, jdump
+from config import IGNORE_ATTACK_SENTENCES, DELIMITERS, TEST_INJECTED_PROMPT, TEST_INJECTED_PROMPT_SPANISH, TEXTUAL_DELM_TOKENS, \
+    TEST_INJECTED_PROMPT_CHINESE
+from data_generation.struq import format_with_other_delimiters
 import numpy as np
 import base64
 
@@ -13,16 +12,23 @@ def naive(d_item):
     d_item['input'] += ' ' + TEST_INJECTED_PROMPT.capitalize()
     return d_item
 
-
-def ignore(d_item):
-    d_item['input'] += ' ' + np.random.choice(IGNORE_ATTACK_SENTENCES['test']).format(
-        injected_prompt=TEST_INJECTED_PROMPT)
+def naive_ood(d_item):
+    d_item['input'] = TEST_INJECTED_PROMPT.capitalize() + ' ' + \
+                       d_item['input']
     return d_item
 
+def ignore(d_item):
+    d_item['input'] += ' ' + (IGNORE_ATTACK_SENTENCES['test'][0]).format(injected_prompt=TEST_INJECTED_PROMPT)
+    return d_item
+
+def ignore_ood(d_item):
+    selected_ignore_prompt = (IGNORE_ATTACK_SENTENCES['test'][0]).format(injected_prompt=TEST_INJECTED_PROMPT)
+    d_item['input'] = selected_ignore_prompt + ' ' + \
+                       d_item['input']
+    return d_item
 
 def ignore_before(d_item):
-    d_item['input'] = np.random.choice(IGNORE_ATTACK_SENTENCES['test']).format(
-        injected_prompt=TEST_INJECTED_PROMPT) + ' ' + d_item['input']
+    d_item['input'] = (IGNORE_ATTACK_SENTENCES['test'][0]).format(injected_prompt=TEST_INJECTED_PROMPT) + ' ' + d_item['input']
     return d_item
 
 
@@ -31,29 +37,40 @@ def ignore_middle(d_item):
     cnt_blank = 0
     for i, s in enumerate(d_item['input']):
         if cnt_blank == num_blank // 2:
-            d_item['input'] = d_item['input'][:i] + np.random.choice(IGNORE_ATTACK_SENTENCES['test']).format(injected_prompt=TEST_INJECTED_PROMPT) + ' ' + d_item['input'][i:]
+            d_item['input'] = d_item['input'][:i] + (IGNORE_ATTACK_SENTENCES['test'][0]).format(injected_prompt=TEST_INJECTED_PROMPT) + ' ' + d_item['input'][i:]
             return d_item
         if s == ' ':
             cnt_blank += 1
 
 
 def escape_deletion(d_item):
-    char = (r'\b' if np.random.rand() < 0.5 else r'\r') * len(d_item['instruction'] + d_item['input'] + ' ' * 10)
+    char = (r'\b') * len(d_item['instruction'] + d_item['input'] + ' ' * 10)
     d_item['input'] += char + TEST_INJECTED_PROMPT.capitalize()
     return d_item
 
 
 def escape_separation(d_item):
-    char = ('\n' if np.random.rand() < 0.5 else '\t') * np.random.choice(range(10))
+    char = ('\n') * 5
     d_item['input'] += char + TEST_INJECTED_PROMPT.capitalize()
     return d_item
 
+def escape_separation_ood(d_item):
+    char = ('\n') * 5
+    d_item['input'] = char + TEST_INJECTED_PROMPT.capitalize() + ' ' + d_item['input']
+    return d_item
 
 def completion_real(d_item):
     d_item['input'] += '\n\n' + DELIMITERS['TextTextText'][2] + '\n' + d_item['output'][1:] + '\n\n' + \
                        DELIMITERS['TextTextText'][0] + '\n' + TEST_INJECTED_PROMPT.capitalize()
     return d_item
 
+def completion_real_ood(d_item):
+    d_item['input'] = DELIMITERS['TextTextText'][2] + '\n' + d_item['output'][1:] + '\n\n' + \
+                       DELIMITERS['TextTextText'][0] + '\n' + TEST_INJECTED_PROMPT.capitalize() + ' ' + \
+                       d_item['input'] + ' ' + \
+                      '\n\n' + DELIMITERS['TextTextText'][2] + '\n' + d_item['output'][1:] + '\n\n' + \
+                      DELIMITERS['TextTextText'][0] + '\n' + TEST_INJECTED_PROMPT.capitalize()
+    return d_item
 
 def completion_realcmb(d_item):
     char = ('\n' if np.random.rand() < 0.5 else '\t') * np.random.choice(range(10))

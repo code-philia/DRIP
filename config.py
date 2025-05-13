@@ -6,7 +6,7 @@
 IGNORE_INDEX = -100
 DEFAULT_TOKENS = {'pad_token': '[PAD]', 'eos_token': '</s>', 'bos_token': '<s>', 'unk_token': '<unk>'}
 TEXTUAL_DELM_TOKENS = ['instruction', 'input',  'response', '###',    ':']
-SPECIAL_DELM_TOKENS = ['[INST]',      '[INPT]', '[RESP]',   '[MARK]', '[COLN]']
+SPECIAL_DELM_TOKENS = ['[INST]', '[INPT]', '[RESP]', '[MARK]', '[COLN]']
 FILTERED_TOKENS = SPECIAL_DELM_TOKENS + ['##']
 OTHER_DELM_TOKENS = {
     'mark': ['{s}', '|{s}|', '<{s}>', '[{s}]', '<|{s}|>', '[|{s}|]', '<[{s}]>', '\'\'\'{s}\'\'\'', '***{s}***'],
@@ -37,11 +37,11 @@ DELIMITERS = {
 
     "llama-7b": ['[INST] ', '', ' [/INST]'],
     "Mistral-7B-Instruct-v0.1": ['<s>[INST] ' , ' ', ' [/INST]'],
-    "Llama-3.2-1B":
+    "Llama-3.2-3B":
         ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
          '<|eot_id|><|start_header_id|>user<|end_header_id|>',
          '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
-    "Llama-3.2-1B-Instruct":
+    "Llama-3.2-3B-Instruct":
         ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
          '<|eot_id|><|start_header_id|>user<|end_header_id|>',
          '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
