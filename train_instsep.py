@@ -62,18 +62,13 @@ def train():
     lora_config = LoraConfig(
         r=16,  # dimension of the updated matrices
         lora_alpha=64,  # parameter for scaling
-        target_modules=["q_proj", "v_proj", "o_proj"],
-        modules_to_save=["lm_head", "input_shifts", "intermediate_shifts"], # fixme
+        target_modules=["q_proj", "v_proj", "o_proj", "intermediate_shifts", "lm_head"],
         lora_dropout=0.1,  # dropout probability for layers
         bias="none",
         task_type="CAUSAL_LM",
     )
     # # Get LoRA model
     model = get_peft_model(model, lora_config)
-
-    for name, param in model.named_parameters():
-        if "input_shifts" in name or "lm_head" in name or "intermediate_shifts" in name:
-            param.requires_grad = True  # ensure that they are not frozen
 
     for name, param in model.named_parameters():
         if param.requires_grad:

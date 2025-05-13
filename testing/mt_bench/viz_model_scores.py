@@ -19,9 +19,11 @@ def get_model_df(score_json_path):
 
 if __name__ == '__main__':
 
-    target_models = ["Llama-3.2-1B-SpclSpclSpcl_NaiveCompletion-instfuse",
-                     "Llama-3.2-1B-SpclSpclSpcl_NaiveCompletion-struq",
-                     "Llama-3.2-1B-Instruct"]
+    target_models = [
+                     "Llama-3.2-3B-SpclSpclSpcl-instfuse",
+                     "Llama-3.2-3B_SpclSpclSpcl-struq",
+                     "Llama-3.2-3B-SpclSpclSpcl-ise",
+                     "Llama-3.2-3B_SpclSpclSpcl-secalign"]
 
     df = pd.DataFrame()
     for model in target_models:
@@ -32,22 +34,42 @@ if __name__ == '__main__':
     print(all_models)
     scores_all = []
     for model in all_models:
-        for cat in CATEGORIES:
-            res = df[(df["category"] == cat) & (df["model"] == model) & (df["score"] >= 0)]
-            score = res["score"].mean()
-            scores_all.append({"model": model, "category": cat, "score": score})
+        res = df[(df["model"] == model) & (df["score"] >= 0)]
+        score = res["score"].mean()
+        scores_all.append({"model": model, "score": score})
+        # for cat in CATEGORIES:
+        #     res = df[(df["category"] == cat) & (df["model"] == model) & (df["score"] >= 0)]
+        #     score = res["score"].mean()
+        #     scores_all.append({"model": model, "category": cat, "score": score})
 
 
-    scores_target = [scores_all[i] for i in range(len(scores_all)) if scores_all[i]["model"] in target_models]
+    scores_target = [scores_all[i] for i in range(len(scores_all)) if (not scores_all[i]["model"].startswith("Llama-3.2-1B")) ]
+    print(scores_target)
 
     # sort by target_models
-    scores_target = sorted(scores_target, key=lambda x: target_models.index(x["model"]), reverse=True)
+    scores_target = sorted(scores_target, key=lambda x: x["model"], reverse=True)
 
-    df_score = pd.DataFrame(scores_target)
-    df_score = df_score[df_score["model"].isin(target_models)]
+    # df_score = pd.DataFrame(scores_target)
 
-    fig = px.line_polar(df_score, r='score', theta='category', line_close=True,
-                        category_orders={"category": CATEGORIES},
-                        color='model', markers=True, color_discrete_sequence=px.colors.qualitative.Pastel)
-
-    fig.write_image("debug.png")
+    # fig = px.line_polar(df_score, r='score', theta='category', line_close=True,
+    #                     category_orders={"category": CATEGORIES},
+    #                     color='model', markers=True, color_discrete_sequence=px.colors.qualitative.Pastel)
+    # fig.update_layout(
+    #     margin=dict(l=40, r=100, t=40, b=40),  # Increase right margin for legend
+    #     legend=dict(
+    #         title="",  # Optional: remove legend title
+    #
+    #     ),
+    #     polar=dict(
+    #         radialaxis=dict(
+    #             showticklabels=True,
+    #             ticks='outside',
+    #             showline=True
+    #         ),
+    #         angularaxis=dict(
+    #             direction='clockwise'
+    #         )
+    #     )
+    # )
+    #
+    # fig.write_image("debug.png")

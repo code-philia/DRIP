@@ -1,2 +1,2 @@
 from .llama_instsep import LlamaForCausalLMMoE, LlamaMoEConfig
-from .llama_instfuse import LlamaForCausalLMFuse
+from .llama_instfuse import LlamaForCausalLMFuse, LlamaFuseConfig

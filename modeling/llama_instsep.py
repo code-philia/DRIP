@@ -11,13 +11,15 @@ from torch.nn import CrossEntropyLoss
 from transformers.cache_utils import Cache, DynamicCache
 import torch.nn.functional as F
 from functools import partial
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 logger = logging.get_logger(__name__)
 
 class LlamaMoEConfig(LlamaConfig):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.apply_input_shifts = kwargs.get('apply_input_shifts', True)
+        self.apply_input_shifts = kwargs.get('apply_input_shifts', False)
         self.apply_intermediate_shifts = kwargs.get('apply_intermediate_shifts', False)
+        self.num_blocks_with_shifts = kwargs.get('num_blocks_with_shifts', 1)
         self.num_experts = kwargs.get('num_experts', 3)
 
     def to_dict(self):
@@ -25,107 +27,9 @@ class LlamaMoEConfig(LlamaConfig):
         base_dict = super().to_dict()
         base_dict["apply_input_shifts"] = self.apply_input_shifts
         base_dict["apply_intermediate_shifts"] = self.apply_intermediate_shifts
+        base_dict["num_blocks_with_shifts"] = self.num_blocks_with_shifts
         base_dict["num_experts"] = self.num_experts
         return base_dict
-
-class LlamaMLPMoE(transformers.models.llama.modeling_llama.LlamaMLP):
-
-    def __init__(self, config: LlamaMoEConfig):
-
-        super().__init__(config)
-        self.apply_intermediate_shifts = config.apply_intermediate_shifts
-        self.intermediate_shifts = nn.Embedding(config.num_experts, config.hidden_size)  # (num_experts, hidden_size)
-        self.custom_initialize()
-
-    def custom_initialize(self):
-        for i in range(self.intermediate_shifts.weight.size(0)):
-            mean = 0.1 * i  # Example: varying mean
-            std = 0.05 + 0.01 * i  # Example: varying std
-            nn.init.normal_(self.intermediate_shifts.weight[i], mean=mean, std=std)
-
-    def forward(self, x, expert_label):
-        if self.config.pretraining_tp > 1:
-            slice = self.intermediate_size // self.config.pretraining_tp
-            gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
-            up_proj_slices = self.up_proj.weight.split(slice, dim=0)
-            down_proj_slices = self.down_proj.weight.split(slice, dim=1)
-
-            gate_proj = torch.cat(
-                [F.linear(x, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1
-            )
-            up_proj = torch.cat([F.linear(x, up_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1)
-
-            intermediate_states = (self.act_fn(gate_proj) * up_proj).split(slice, dim=2)
-            down_proj = [
-                F.linear(intermediate_states[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
-            ]
-            down_proj = sum(down_proj)
-        else:
-            down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-
-        #  Apply shift directly to the intermediate representation
-        if self.apply_intermediate_shifts:
-            shift = self.intermediate_shifts(expert_label)  # (batch_size, seq_len, hidden_size)
-            down_proj = down_proj + shift  # Instead of selecting experts, apply a shift
-
-        return down_proj
-
-
-
-class LlamaDecoderLayer(transformers.models.llama.modeling_llama.LlamaDecoderLayer):
-    def __init__(self, config: LlamaMoEConfig, layer_index):
-        super().__init__(config, layer_index)  # layer_index
-        self.mlp = LlamaMLPMoE(
-            config=config
-        )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        expert_labels: torch.LongTensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.45
-        **kwargs,
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-
-        residual = hidden_states
-
-        hidden_states = self.input_layernorm(hidden_states)
-
-        # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-            **kwargs,
-        )
-        hidden_states = residual + hidden_states
-
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, expert_labels)
-        hidden_states = residual + hidden_states
-
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        return outputs
 
 
 class LlamaModel(transformers.LlamaModel):
@@ -145,45 +49,26 @@ class LlamaModel(transformers.LlamaModel):
         self.apply_input_shifts = config.apply_input_shifts
         self.input_shifts = nn.Embedding(config.num_experts, config.hidden_size)
 
+        self.apply_intermediate_shifts = config.apply_intermediate_shifts
+        self.num_blocks_with_shifts = config.num_blocks_with_shifts
+        self.intermediate_shifts = nn.Embedding(config.num_experts, config.hidden_size)
+
         # Register forward hook
+        self.track_hidden_states = False
         self.hook = {}
-        self.hook_handles = []  # Store handles to remove hooks later
         self.post_init()
         self.custom_initialize()
 
     def custom_initialize(self):
-        for i in range(self.input_shifts.weight.size(0)):
-            mean = 0.1 * i  # Example: varying mean
-            std = 0.05 + 0.01 * i  # Example: varying std
-            nn.init.normal_(self.input_shifts.weight[i], mean=mean, std=std)
+        nn.init.normal_(self.input_shifts.weight, mean=0, std=0.01)
+        nn.init.normal_(self.intermediate_shifts.weight, mean=0, std=0.01)
 
-    def hook_func(self, module, input, output, layer_idx):
-        self.hook[f'feat_{layer_idx}'] = output.detach()
+    def enable_hidden_state_tracking(self):
+        self.track_hidden_states = True
+        self.hook.clear()
 
-    def enable_hooks(self):
-        """ Registers hooks dynamically """
-        self.hook.clear()  # Reset hook storage
-        self.hook_handles.clear()
-
-        for layer_idx, module in enumerate(self.layers):
-            if hasattr(module, 'mlp') and module.mlp is not None:
-                hook_name = f'feat_{layer_idx}'
-                self.hook[hook_name] = None
-
-                hook_handle = module.mlp.register_forward_hook(
-                    partial(self.hook_func, layer_idx=layer_idx)
-                )
-                self.hook_handles.append(hook_handle)  # Store the handle for removal
-
-    def disable_hooks(self):
-        """ Removes hooks dynamically and clears stored activations """
-        for handle in self.hook_handles:
-            handle.remove()  # Unregister the hook
-        self.hook_handles.clear()
-        self.hook.clear()  # Free memory
-
-    def clear_hooks(self):
-        """ Clears stored activations in self.hook without removing hooks """
+    def disable_hidden_state_tracking(self):
+        self.track_hidden_states = False
         self.hook.clear()
 
     def forward(
@@ -247,7 +132,10 @@ class LlamaModel(transformers.LlamaModel):
         ## fixme:
         if self.apply_input_shifts:
             shifts = self.input_shifts(expert_labels)  # (batch_size, seq_len, hidden_size)
+            assert expert_labels.shape[:2] == hidden_states.shape[:2]
             hidden_states = hidden_states + shifts
+            if self.track_hidden_states:
+                self.hook[f'after_input_shift'] = hidden_states.detach().clone()
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -257,7 +145,7 @@ class LlamaModel(transformers.LlamaModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        for decoder_layer in self.layers:
+        for it, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -288,6 +176,12 @@ class LlamaModel(transformers.LlamaModel):
                 )
 
             hidden_states = layer_outputs[0]
+            if it >= len(self.layers) - self.num_blocks_with_shifts and self.apply_intermediate_shifts:
+            # if it < self.num_blocks_with_shifts and self.apply_intermediate_shifts:
+                shifts = self.intermediate_shifts(expert_labels)
+                assert expert_labels.shape[:2] == hidden_states.shape[:2]
+                hidden_states = hidden_states + shifts
+
 
             if use_cache:
                 next_decoder_cache = layer_outputs[2 if output_attentions else 1]
@@ -296,6 +190,8 @@ class LlamaModel(transformers.LlamaModel):
                 all_self_attns += (layer_outputs[1],)
 
         hidden_states = self.norm(hidden_states)
+        if self.track_hidden_states:
+            self.hook[f'output_layer'] = hidden_states.detach().clone()
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -342,6 +238,8 @@ class LlamaForCausalLMMoE(transformers.LlamaForCausalLM):
         apply_input_shifts: Optional[bool] = None,
         apply_output_shifts: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        if expert_labels is None:
+            raise ValueError("expert_labels must be provided for MoE model.")
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (

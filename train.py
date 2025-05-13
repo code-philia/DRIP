@@ -8,7 +8,7 @@ from typing import Dict, Optional, Sequence
 import torch
 import transformers
 import trl
-from struq import SupervisedDataset
+from data_generation.struq import SupervisedDataset, smart_tokenizer_and_embedding_resize, make_supervised_data_module_orig, find_closest_match
 from config import IGNORE_INDEX, DEFAULT_TOKENS, SPECIAL_DELM_TOKENS, TEXTUAL_DELM_TOKENS, DELIMITERS
 import difflib
 
@@ -47,112 +47,6 @@ class TrainingArguments(trl.ORPOConfig): #transformers.TrainingArguments): #
     report_to: Optional[str] = "wandb"
     resume_from_checkpoint: Optional[bool] = field(default=True)
 
-@dataclass
-class DataCollatorForSupervisedDatasetOrig(object):
-    """Collate examples for supervised fine-tuning."""
-
-    tokenizer: transformers.PreTrainedTokenizer
-
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
-
-        input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
-        )
-
-        labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=IGNORE_INDEX)
-
-        return dict(
-            input_ids=input_ids,
-            labels=labels,
-            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
-        )
-
-@dataclass
-class DataCollatorForSupervisedDataset(object):
-    """Collate examples for supervised fine-tuning."""
-
-    tokenizer: transformers.PreTrainedTokenizer
-
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, expert_labels, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "expert_labels", "labels"))
-
-        input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
-        )
-
-        expert_labels = torch.nn.utils.rnn.pad_sequence(
-            expert_labels, batch_first=True, padding_value=2
-        ) # pad the sequence with 2? (response)
-
-        labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=IGNORE_INDEX)
-
-        return dict(
-            input_ids=input_ids,
-            expert_labels=expert_labels,
-            labels=labels,
-            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
-        )
-
-def get_embedding_indices(tokenizer):
-    init_values = [tokenizer.encode(v, add_special_tokens=False)[0]
-                   for v in TEXTUAL_DELM_TOKENS] # get the delimiters tokens IDs
-    ignore_values = [i for i in range(len(tokenizer))
-                     if tokenizer.decode(i) == "#"] # get the padding token ID
-    return init_values, ignore_values
-
-def smart_tokenizer_and_embedding_resize(
-    special_tokens_dict: Dict,
-    tokenizer: transformers.PreTrainedTokenizer,
-    model: transformers.PreTrainedModel,
-):
-    """Resize tokenizer and embedding.
-
-    Note: This is the unoptimized version that may make your embedding size not be divisible by 64.
-    """
-    num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
-    model.resize_token_embeddings(len(tokenizer))
-
-    REAL_DELIMITERS_INIT_EMBD_IND, _ = get_embedding_indices(tokenizer) # get embeddings for ['instruction', 'input',  'response', '###',  ':']
-
-    if num_new_tokens > 0:
-        input_embeddings = model.get_input_embeddings().weight.data
-        output_embeddings = model.get_output_embeddings().weight.data
-
-        input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
-        output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
-
-        input_embeddings[-num_new_tokens] = input_embeddings_avg # pad token's embedding is initialized to be average
-        output_embeddings[-num_new_tokens] = output_embeddings_avg
-
-        ## let ['[INST]', '[INPT]', '[RESP]', '[MARK]', '[COLN]'] = ['instruction', 'input',  'response', '###', ':']
-        for i in range(len(SPECIAL_DELM_TOKENS)):
-            input_embeddings[-num_new_tokens+i+1] = input_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
-            output_embeddings[-num_new_tokens+i+1] = output_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
-
-def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters, downsample=True) -> Dict:
-    """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = SupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, attack=data_args.attack,
-                                      frontend_delimiters=frontend_delimiters, downsample=downsample)
-    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    return dict(train_dataset=train_dataset,
-                eval_dataset=None,
-                data_collator=data_collator)
-
-def make_supervised_data_module_orig(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters, downsample=True) -> Dict:
-    """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = SupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, attack=data_args.attack,
-                                      frontend_delimiters=frontend_delimiters, downsample=downsample)
-    data_collator = DataCollatorForSupervisedDatasetOrig(tokenizer=tokenizer)
-    return dict(train_dataset=train_dataset,
-                eval_dataset=None,
-                data_collator=data_collator)
-
-def find_closest_match(model_name, delimiter_dict):
-    closest_matches = difflib.get_close_matches(model_name, delimiter_dict.keys(), n=1, cutoff=0.5)
-    return closest_matches[0] if closest_matches else None
 
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments, AttackArguments))

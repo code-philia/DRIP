@@ -4,17 +4,16 @@
 # LICENSE file in the root directory of this source tree.
 
 import transformers
-import torch
 from train import smart_tokenizer_and_embedding_resize, make_supervised_data_module, ModelArguments, DataArguments, TrainingArguments, AttackArguments, find_closest_match
 from config import DEFAULT_TOKENS, SPECIAL_DELM_TOKENS, DELIMITERS
-from peft import get_peft_model, LoraConfig, TaskType
 from transformers import Trainer
 from transformers.utils import logging
-from torch import nn
 from modeling.llama_instsep import LlamaForCausalLMMoE, LlamaMoEConfig
-import yaml
-from struq import jload
+from data_generation.struq import jload
+
 logger = logging.get_logger(__name__)
+
+
 
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments, AttackArguments))
@@ -29,8 +28,9 @@ def train():
     )
     if len(model_args.extra_config_path) > 0:
         loaded_custom_config = jload(model_args.extra_config_path)
-        merged_config_dict = {**config.to_dict(), **loaded_custom_config}
-        config = LlamaMoEConfig.from_dict(merged_config_dict)
+        config_dict = config.to_dict()
+        config_dict.update(loaded_custom_config)
+        config = LlamaMoEConfig(**config_dict)
 
     model = LlamaForCausalLMMoE.from_pretrained(
         model_args.model_name_or_path,
@@ -58,31 +58,17 @@ def train():
 
     smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model)
 
-    # Create PEFT config for these modules and wrap the model to PEFT
-    lora_config = LoraConfig(
-        r=16,  # dimension of the updated matrices
-        lora_alpha=64,  # parameter for scaling
-        target_modules=["q_proj", "v_proj", "o_proj"],
-        modules_to_save=["lm_head", "input_shifts"], # fixme
-        lora_dropout=0.1,  # dropout probability for layers
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    # # Get LoRA model
-    model = get_peft_model(model, lora_config)
-
-    for name, param in model.named_parameters():
-        if "input_shifts" in name or "lm_head" in name:
-            param.requires_grad = True  # ensure that they are not frozen
-
     for name, param in model.named_parameters():
         if param.requires_grad:
             print(f"✅ {name} is trainable")
 
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Trainable Params: {trainable_params} / {total_params} ({100 * trainable_params / total_params:.2f}%)")
+
     # Construct dataloader
     frontend_delimiters = 'SpclSpclSpcl' if 'SpclSpclSpcl' in data_args.attack else find_closest_match(model_args.model_name_or_path, DELIMITERS)
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args, frontend_delimiters=frontend_delimiters, downsample=training_args.downsample)
-    data_module["train_dataset"].dataloader_num_workers = 4  # Adjust based on your CPU cores
     if not training_args.downsample and training_args.lr_scale:
         training_args.learning_rate /= data_module["train_dataset"].data_copy_count
 
@@ -96,17 +82,8 @@ def train():
     trainer.train()
     trainer.save_state()
     trainer.save_model(output_dir=training_args.output_dir)
-    # Save the custom configuration after training
     config = trainer.model.config  # Access the config of the model
     config.save_pretrained(training_args.output_dir)
 
-    
 if __name__ == "__main__":
     train()
-    # model = "meta-llama/Llama-3.2-1B"
-    # data_path = "datasets/alpaca_data_cleaned.json"
-    # attack = "SpclSpclSpcl_NaiveCompletion"
-    # model_max_length = 512
-    # lr = 2e-5
-
-    #  CUDA_VISIBLE_DEVICES=1,2,3,0 python -m torch.distributed.run --nproc_per_node=4 train_seg.py --model_name_or_path meta-llama/Llama-3.2-1B --data_path datasets/alpaca_data_cleaned.json  --output_dir meta-llama/Llama-3.2-1B-SpclSpclSpcl_NaiveCompletion-moe  --num_train_epochs 3  --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --evaluation_strategy "no"  --save_strategy "epoch"  --learning_rate 2e-4  --weight_decay 0.  --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --fsdp "full_shard auto_wrap" --fsdp_transformer_layer_cls_to_wrap "LlamaDecoderLayer" --tf32 True --attack SpclSpclSpcl_NaiveCompletion --model_max_length 512 --bf16 True --dataloader_num_workers 4

@@ -3,21 +3,17 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-from trl import DPOTrainer, KTOTrainer, ORPOTrainer, KTOConfig, ORPOConfig
-import os, re, time
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence
+from trl import DPOTrainer
+import os, time
 import numpy as np
 from copy import deepcopy
 import transformers
-from config import IGNORE_ATTACK_SENTENCES, PROMPT_FORMAT, DEFAULT_TOKENS, DELIMITERS, SPECIAL_DELM_TOKENS
-from struq import jload, jdump, format_with_other_delimiters
-from train import ModelArguments, DataArguments, AttackArguments, smart_tokenizer_and_embedding_resize, TrainingArguments, find_closest_match
+from config import PROMPT_FORMAT, DEFAULT_TOKENS, DELIMITERS, SPECIAL_DELM_TOKENS
+from data_generation.struq import jload, jdump, format_with_other_delimiters
+from train import ModelArguments, DataArguments, AttackArguments, smart_tokenizer_and_embedding_resize, TrainingArguments
 from datasets import load_dataset
-from peft import get_peft_model, LoraConfig, TaskType, PeftModel
-import io
-import json
-
+from peft import get_peft_model, LoraConfig, TaskType
+from tqdm import tqdm
 
 def generate_preference_data(clean_data_path, frontend_delimiters, attack, alignment, tokenizer):
 
@@ -34,7 +30,7 @@ def generate_preference_data(clean_data_path, frontend_delimiters, attack, align
             for ref_sample in jload('datasets/alpaca_data.json'):
                 ref_inst_resp[ref_sample['instruction'].replace(tokenizer.pad_token, '')] = ref_sample['output']
 
-        for i in range(len(clean_data)):
+        for i in tqdm(range(len(clean_data)), desc="Generate preference training data"):
             if clean_data[i].get("input", "") == "":
                 continue
             current_sample = deepcopy(clean_data[i])
@@ -77,33 +73,24 @@ def align():
     model_args, training_args, data_args, attack_args = parser.parse_args_into_dataclasses()
     if 'Instruct' in model_args.model_name_or_path:
         assert 'SpclSpclSpcl' not in data_args.attack
+    if 'Instruct' in model_args.model_name_or_path:
+        frontend_delimiters = model_args.model_name_or_path.split('/')[-1]
+    else:
+        frontend_delimiters = "SpclSpclSpcl"
 
     model = transformers.AutoModelForCausalLM.from_pretrained(
-        model_args.base_model_name_or_path if len(model_args.base_model_name_or_path) else model_args.model_name_or_path,
+        model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
-        ignore_mismatched_sizes=True
+        low_cpu_mem_usage=True,
     )
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.base_model_name_or_path if len(model_args.base_model_name_or_path) else model_args.model_name_or_path,
+        model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
         model_max_length=training_args.model_max_length,
         padding_side=model_args.padding_side,
         use_fast=False,
     )
-
-    special_tokens_dict = dict()
-    special_tokens_dict["pad_token"] = DEFAULT_TOKENS['pad_token']
-    special_tokens_dict["eos_token"] = DEFAULT_TOKENS['eos_token']
-    special_tokens_dict["bos_token"] = DEFAULT_TOKENS['bos_token']
-    special_tokens_dict["unk_token"] = DEFAULT_TOKENS['unk_token']
-    special_tokens_dict["additional_special_tokens"] = SPECIAL_DELM_TOKENS
-
-    smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model)
-    tokenizer.model_max_length = 512  ### the default value is too large for model.generation_config.max_new_tokens
-    if len(model_args.base_model_name_or_path):
-        model = PeftModel.from_pretrained(model, model_args.model_name_or_path, is_trainable=True)
-        model = model.merge_and_unload()
 
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -111,39 +98,40 @@ def align():
         r=64,
         lora_alpha=8,
         lora_dropout=0.1,
-        target_modules = ["q_proj", "v_proj"]
-        )
-    
+        target_modules=["q_proj", "v_proj"]
+    )
+
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     print(training_args.output_dir, '\n\n\n')
-    if model_args.window_size > 0:
-        model.config.window = model_args.window_size
+    if model_args.window_size > 0: model.config.window = model_args.window_size
 
-    frontend_delimiters = 'SpclSpclSpcl' if 'SpclSpclSpcl' in data_args.attack else find_closest_match(model_args.model_name_or_path, DELIMITERS)
+    special_tokens_dict = dict()
+    special_tokens_dict["pad_token"] = DEFAULT_TOKENS['pad_token']  ###
+    special_tokens_dict["eos_token"] = DEFAULT_TOKENS['eos_token']
+    special_tokens_dict["bos_token"] = DEFAULT_TOKENS['bos_token']
+    special_tokens_dict["unk_token"] = DEFAULT_TOKENS['unk_token']
+    special_tokens_dict["additional_special_tokens"] = SPECIAL_DELM_TOKENS  ###
+    smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model)
+
     train_dataset = generate_preference_data(
-        data_args.data_path, 
+        data_args.data_path,
         frontend_delimiters,
         attack_args.attack,
         attack_args.alignment,
         tokenizer
     )
 
-    trainer = {
-        'dpo': DPOTrainer,
-        'kto': KTOTrainer,
-        'orpo': ORPOTrainer,
-        }[attack_args.alignment](
-            model,
-            args=training_args,
-            train_dataset=train_dataset,
-            tokenizer=tokenizer,
+    trainer = DPOTrainer(
+        model,
+        args=training_args,
+        train_dataset=train_dataset,
+        tokenizer=tokenizer,
     )
 
     trainer.train()
     trainer.save_state()
     trainer.save_model(output_dir=training_args.output_dir)
-
 
 if __name__ == "__main__":
     align()

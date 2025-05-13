@@ -12,17 +12,14 @@ import shortuuid
 import torch
 from tqdm import tqdm
 from fastchat.llm_judge.common import load_questions, temperature_config
-from testing.test import load_lora_model
+from testing.test import load_full_model, load_lora_model
 from config import (
     DELIMITERS,
-    PROMPT_FORMAT,
     SYS_INPUT,
-    TEST_INJECTED_PROMPT,
-    TEST_INJECTED_WORD,
 )
 import fastchat
 import dataclasses
-from struq import _tokenize_fn
+from data_generation.struq import _tokenize_fn
 
 def run_eval(
     model,
@@ -128,6 +125,7 @@ def get_model_answers(
                     output_ids,
                     spaces_between_special_tokens=False,
                 )
+
                 if conv.stop_str and isinstance(conv.stop_str, list):
                     stop_str_indices = sorted(
                         [
@@ -231,8 +229,13 @@ if __name__ == "__main__":
     answer_file = f"{args.model_path}/predictions_on_mtbench.jsonl"
     print(f"Output to {answer_file}")
 
-    model, tokenizer, frontend_delimiters, training_attacks = load_lora_model(args.model_path,
-                                                                              customized_model_class=args.customized_model_class)
+    if "secalign" in args.model_path:
+        model, tokenizer, frontend_delimiters, training_attacks = load_lora_model(args.model_path,
+                                                                                  customized_model_class=args.customized_model_class)
+
+    else:
+        model, tokenizer, frontend_delimiters, training_attacks = load_full_model(args.model_path,
+                                                                                  customized_model_class=args.customized_model_class)
     inst_delm = DELIMITERS[frontend_delimiters][0]
     resp_delm = DELIMITERS[frontend_delimiters][2]
     fastchat.conversation.register_conv_template(
@@ -242,6 +245,7 @@ if __name__ == "__main__":
             roles=(inst_delm, resp_delm),
             sep="\n\n",
             sep2="</s>",
+            stop_token_ids=[tokenizer.eos_token_id]
         )
     )
 

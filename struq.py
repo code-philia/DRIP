@@ -124,8 +124,15 @@ def generate_training_data(data_dicts, prompt_dict_name, attack, frontend_delimi
 def find_first_occurrence(seq, separator):
     for i in range(len(seq) - len(separator) + 1):
         if torch.equal(seq[i:i + len(separator)], separator):  # Check if slice matches the separator
-            return i  # Return the starting index of the first match
+            return i  # Return the ENDING index of the first match
     return -1  # Return -1 if separator is not found
+
+def find_last_occurrence(seq, separator):
+    last_index = -1
+    for i in range(len(seq) - len(separator) + 1):
+        if torch.equal(seq[i:i + len(separator)], separator):  # Check if slice matches the separator
+            last_index = i  # Update to the ENDING index of this match
+    return last_index  # Return -1 if the separator is not found, or the last match index if found
 
 def _tokenize_fn(strings, tokenizer, frontend_delimiters='SpclSpclSpcl', compute_gate=False):
     tokenized_list = [
@@ -162,11 +169,10 @@ def _tokenize_fn(strings, tokenizer, frontend_delimiters='SpclSpclSpcl', compute
             if data_separator_position != -1:
                 expert_this[data_separator_position:] = 1  # After the separator: data (1)
 
-            response_separator_position = find_first_occurrence(seq, response_seperator)
+            response_separator_position = find_last_occurrence(seq, response_seperator)
             if response_separator_position != -1:
                 expert_this[response_separator_position:] = 2  # After the separator: response (2)
-            else:
-                expert_this[-1] = 2 # the sequence is truncated, make the last token id to be response (2)
+            expert_this[-1] = 2 # the sequence is truncated, make the last token id to be response (2)
             expert_labels.append(expert_this)
 
     input_ids_lens = [

@@ -14,6 +14,16 @@ from functools import partial
 from dataclasses import dataclass
 logger = logging.get_logger(__name__)
 
+class LlamaFuseConfig(LlamaConfig):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def to_dict(self):
+        """Ensures the custom keys are included when saving config."""
+        base_dict = super().to_dict()
+        return base_dict
+
+
 @dataclass
 class CausalLMFuseOutputWithPast(CausalLMOutputWithPast):
     past_inst_hidden_states: Optional[torch.FloatTensor] = None
@@ -21,15 +31,32 @@ class CausalLMFuseOutputWithPast(CausalLMOutputWithPast):
 class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaFuseConfig):
         super().__init__(config)
         self.vocab_size = config.vocab_size
         self.hidden_size = config.hidden_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.fuse_head = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.residual_weight = nn.Parameter(torch.tensor(0.1))
+        self.label_gap = nn.Parameter(torch.tensor(0.05))
         self.post_init()
 
-    def _compute_shifts(self, expert_labels: torch.LongTensor) -> Tuple[torch.LongTensor, torch.BoolTensor]:
+    def _get_resp_indices(self, expert_labels: torch.LongTensor) -> torch.LongTensor:
+        batch_size, seq_len = expert_labels.shape
+        # mask of where label == 2
+        two_mask = (expert_labels == 2)  # (B, L)
+
+        # broadcasted sequence indices 0…L−1
+        seq_indices = torch.arange(seq_len, device=expert_labels.device).unsqueeze(0)  # (1, L)
+
+        # set “no-2” positions to a big index (= seq_len)
+        masked_indices = torch.where(two_mask, seq_indices, seq_len)  # (B, L)
+
+        # take the minimum along dim=1 → shape (B,)
+        first_two_indices = masked_indices.min(dim=1)[0]  # (batch_size,)
+
+        return first_two_indices
+
+    def _get_inst_indices(self, expert_labels: torch.LongTensor) -> torch.LongTensor:
         batch_size, seq_len = expert_labels.shape
 
         # Find the last zero index for each sequence
@@ -42,11 +69,7 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
         no_zero_mask = ~zero_mask.any(dim=1)  # Rows where no zero exists
         last_zero_indices = torch.where(no_zero_mask, torch.tensor(seq_len - 1, device=expert_labels.device), last_zero_indices) # (batch_size, )
 
-        # Generate mask for indices > last_zero_indices
-        orig_indices = torch.arange(seq_len, device=expert_labels.device).expand(batch_size, -1)  # (batch_size, seq_len)
-        mask = orig_indices > last_zero_indices.unsqueeze(1)  # (batch_size, seq_len)
-
-        return last_zero_indices, mask
+        return last_zero_indices
 
     def forward(
         self,
@@ -87,32 +110,51 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
 
         hidden_states = outputs[0] # (batch_size, seq_len, hidden_size)
         if expert_labels is not None:
-            batch_size, _, hidden_size = hidden_states.shape
+            batch_size, length, hidden_size = hidden_states.shape
             if past_inst_hidden_states is None:
-                last_zero_indices, mask = self._compute_shifts(expert_labels)
+                batch_idx = torch.arange(batch_size, device=hidden_states.device) # (B,)
 
-                last_zero_indices = last_zero_indices.unsqueeze(1).unsqueeze(2).expand(-1, 1, hidden_size)  # (batch_size, 1, cut_hidden_size)
-                past_inst_hidden_states = torch.gather(hidden_states, dim=1, index=last_zero_indices)  # (batch_size, 1, cut_hidden_size) cache_last_inst_hidden[i][j][k] = hidden_states[i][last_zero_indices[i]][k]
+                last_inst_indices = self._get_inst_indices(expert_labels) # (B,)
+                last_inst = hidden_states[batch_idx, last_inst_indices]  # (B,H)
 
-                # Add instruction semantic as a residual connection
-                mask = mask.unsqueeze(-1).expand(-1, -1, hidden_size)  # (batch_size, seq_len, hidden_size)
-                hidden_states = hidden_states + mask * past_inst_hidden_states
-            else:
-                # hidden_states = hidden_states + past_inst_hidden_states
-                pass
+                first_resp_indices = self._get_resp_indices(expert_labels) # (B,)
+                first_resp = hidden_states[batch_idx, first_resp_indices]  # (B,H)
 
-            if self.config.pretraining_tp > 1:
-                fuse_head_slices = self.fuse_head.weight.split(self.hidden_size // self.config.pretraining_tp, dim=0)
-                hidden_states = [F.linear(hidden_states, fuse_head_slices[i]) for i in range(self.config.pretraining_tp)]
-                hidden_states = torch.cat(hidden_states, dim=-1)
-            else:
-                hidden_states = self.fuse_head(hidden_states) # additional fusion layer
+                # fixme: Add last instruction token's semantic as a residual connection to the 1st response token
+                mix_factor = torch.sigmoid(self.residual_weight)  # factor between 0 and 1
+                mixed_states = torch.lerp(first_resp, last_inst, mix_factor) # (B,H)
+
+                mask2d = torch.zeros(batch_size, length, dtype=torch.bool, device=hidden_states.device)
+                mask2d[batch_idx, first_resp_indices] = True
+                mask3d = mask2d.unsqueeze(-1) # broadcast to (B, L, 1)
+
+                mixed = mixed_states.unsqueeze(1).expand(-1, length, -1) # expand mixed_states (B,H) → (B, L, H)
+                hidden_states = torch.where(mask3d, mixed, hidden_states)
+
+                # fixme: Reserve a dimension for the instruction hierarchy level
+                tags = expert_labels.to(hidden_states.dtype) * self.label_gap # (B,L)
+                new_hidden = torch.cat([
+                    tags.unsqueeze(-1),  # (B, L, 1)
+                    hidden_states[..., 1:]  # (B, L, H-1)
+                ], dim=-1)  # => (B, L, H)
+                hidden_states = new_hidden
+
+                past_inst_hidden_states = last_inst.clone().detach().cpu()
+
+            else: # for newly generated token, do not add the instruction semantic
+                tags = expert_labels.to(hidden_states.dtype) * self.label_gap  # (B,L)
+                new_hidden = torch.cat([
+                    tags.unsqueeze(-1),  # (B, L, 1)
+                    hidden_states[..., 1:]  # (B, L, H-1)
+                ], dim=-1)  # => (B, L, H)
+                hidden_states = new_hidden
 
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
             logits = [F.linear(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
             logits = torch.cat(logits, dim=-1)
         else:
+            hidden_states = hidden_states.to(self.lm_head.weight.dtype)
             logits = self.lm_head(hidden_states)
 
         logits = logits.float()
@@ -154,21 +196,50 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
         use_cache=True,
         **kwargs,
     ):
-        model_inputs = super().prepare_inputs_for_generation(
-            input_ids,
-            past_key_values,
-            attention_mask,
-            inputs_embeds,
-            cache_position,
-            position_ids,
-            use_cache,
-            **kwargs,
-        )
-
+        # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
+        # Exception 1: when passing input_embeds, input_ids may be missing entries
+        # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
+        expert_labels = None
         if "expert_labels" in kwargs:
-            model_inputs["expert_labels"] = kwargs["expert_labels"]  # Pass expert_labels if provided
+            expert_labels = kwargs["expert_labels"]
+
+        if past_key_values is not None:
+            if inputs_embeds is not None:  # Exception 1
+                input_ids = input_ids[:, -cache_position.shape[0] :]
+                if expert_labels is not None:
+                    expert_labels = expert_labels[:, -cache_position.shape[0] :] # ensure correct slicing
+            elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
+                input_ids = input_ids[:, cache_position] # (batch_size, 1)
+
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -input_ids.shape[1] :]
+                if expert_labels is not None:
+                    expert_labels = expert_labels[:, -input_ids.shape[1] :] # fixme: the expert label will inherit the last token's expert label
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and cache_position[0] == 0:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids.contiguous()}  # `contiguous()` needed for compilation use cases
+
+        if expert_labels is not None:
+            model_inputs["expert_labels"] = expert_labels
         if "past_inst_hidden_states" in kwargs:
             model_inputs["past_inst_hidden_states"] = kwargs["past_inst_hidden_states"]  # Pass expert_labels if provided
+
+        model_inputs.update(
+            {
+                "position_ids": position_ids,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "use_cache": use_cache,
+                "attention_mask": attention_mask,
+            }
+        )
         return model_inputs
 
     def _update_model_kwargs_for_generation(
@@ -187,6 +258,6 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
             standardize_cache_format,
             num_new_tokens,
         )
-        if "past_inst_hidden_states" in outputs:
-            model_kwargs["past_inst_hidden_states"] = outputs.past_inst_hidden_states.detach() # cache the last instruction token hidden state
+        if hasattr(outputs, "past_inst_hidden_states"):
+            model_kwargs["past_inst_hidden_states"] = outputs.past_inst_hidden_states # cache the last instruction token hidden state
         return model_kwargs
