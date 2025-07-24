@@ -25,6 +25,9 @@ from transformers import (
     LlamaForCausalLM,
     MistralForCausalLM,
 )
+from typing import Dict
+import transformers
+from modeling import LlamaForCausalLMFuse, LlamaForCausalLMMoE, LlamaFuseConfig, LlamaMoEConfig, LlamaForCausalLMFuseV2, LlamaForCausalLMMoEV2
 
 
 def hit_rate_at_n(jb_stat, n):
@@ -335,7 +338,7 @@ def log_data_to_table(log_table, bs, log_seqs):
 def autocast_decorator(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
-        if "cuda" in self.device:
+        if "cuda" in str(self.device):
             device = "cuda"
         else:
             device = self.device
@@ -432,40 +435,69 @@ def read_csv_file(filename):
 
 
 def llm_loader(llm_params, verbose=False):
-    if '_' not in llm_params.checkpoint: llm_params.checkpoint = llm_params.checkpoint.replace('../', '')
+    if '_' not in llm_params.checkpoint:
+        llm_params.checkpoint = llm_params.checkpoint.replace('../', '')
     tqdm.write(
         f" Loading model: {llm_params.model_name} from {llm_params.checkpoint}...",
     )
     mem_before = get_total_allocated_memory()
-    if llm_params.dtype == "float32":
-        dtype = torch.float32
-    elif llm_params.dtype == "float16":
-        dtype = torch.float16
+
+    use_fast = "pythia" in llm_params.checkpoint
+    tokenizer = AutoTokenizer.from_pretrained(
+        llm_params.checkpoint,
+        model_max_length=512,
+        padding_side="right",
+        use_fast=use_fast,
+        legacy=False,
+    )
+
+    if llm_params.customized_model_class:
+        if llm_params.customized_model_class == "LlamaForCausalLMFuse": # fixme: support more
+            config = LlamaFuseConfig.from_pretrained(llm_params.checkpoint)
+            model = LlamaForCausalLMFuse.from_pretrained(
+                    llm_params.checkpoint,
+                    config=config,
+                    low_cpu_mem_usage=True,
+                    device_map="auto",
+                    trust_remote_code=True
+                )
+        elif llm_params.customized_model_class == "LlamaForCausalLMFuseV2": # fixme: support more
+            config = LlamaFuseConfig.from_pretrained(llm_params.checkpoint)
+            model = LlamaForCausalLMFuseV2.from_pretrained(
+                    llm_params.checkpoint,
+                    config=config,
+                    low_cpu_mem_usage=True,
+                    device_map="auto",
+                    trust_remote_code=True
+                )
+        elif llm_params.customized_model_class == "LlamaForCausalLMMoE":
+            config = LlamaMoEConfig.from_pretrained(llm_params.checkpoint)
+            model = LlamaForCausalLMMoE.from_pretrained(
+                llm_params.checkpoint,
+                config=config,
+                low_cpu_mem_usage=True,
+                device_map="auto",
+                trust_remote_code=True
+            )
+        elif llm_params.customized_model_class == "LlamaForCausalLMMoEV2":
+            config = LlamaMoEConfig.from_pretrained(llm_params.checkpoint)
+            model = LlamaForCausalLMMoEV2.from_pretrained(
+                llm_params.checkpoint,
+                config=config,
+                low_cpu_mem_usage=True,
+                device_map="auto",
+                trust_remote_code=True
+            )
+        else:
+            raise NotImplementedError
     else:
-        raise ValueError(f"Cannot load model with dtype {llm_params.dtype}")
-    if llm_params.checkpoint == "stas/tiny-random-llama-2":
-        tokenizer = AutoTokenizer.from_pretrained(
-            llm_params.checkpoint,
-            padding_side="right",
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            llm_params.checkpoint, torch_dtype=dtype
-        ).to(llm_params.device)
-    else:
-        use_fast = "pythia" in llm_params.checkpoint
-        tokenizer = AutoTokenizer.from_pretrained(
-            llm_params.checkpoint,
-            model_max_length=1024,
-            padding_side="right",
-            use_fast=use_fast,
-            legacy=False,
-        )
         model = AutoModelForCausalLM.from_pretrained(
             llm_params.checkpoint,
             low_cpu_mem_usage=True,
-            torch_dtype=dtype,
-            device_map=llm_params.device,
+            device_map="auto",
+            trust_remote_code=True,
         )
+
     mem_after = get_total_allocated_memory()
 
     if verbose:
@@ -474,7 +506,7 @@ def llm_loader(llm_params, verbose=False):
         f" Mem usage model: {mem_after - mem_before:.2f} GB | Total Mem usage: {get_total_allocated_memory():.2f} GB",
     )
 
-    embedding_matrix = get_embedding_matrix(model).to(llm_params.device)
+    embedding_matrix = get_embedding_matrix(model)
 
     if llm_params.freeze:
         tqdm.write(" Freezing model...")
@@ -501,7 +533,6 @@ def llm_loader(llm_params, verbose=False):
             lora_config = LoraConfig(**lora_config_dct)
             model = get_peft_model(model, lora_config)
 
-
     print_trainable_parameters(model)
     return model, tokenizer, embedding_matrix
 
@@ -514,7 +545,7 @@ def get_embedding_matrix(model):
         or isinstance(model, MistralForCausalLM)
         or isinstance(model, GemmaForCausalLM)
     ):
-        return model.model.embed_tokens.weight
+        return model.base_model.embed_tokens.weight
     elif isinstance(model, GPTNeoXForCausalLM):
         return model.base_model.embed_in.weight
     elif isinstance(model, FalconForCausalLM):

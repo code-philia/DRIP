@@ -5,10 +5,8 @@
 #
 import torch
 from tqdm import tqdm
-
-from sequence import MergedSeq, Seq, EmptySeq
-from utils import apply_repetition_penalty
-
+from advprompter.sequence import MergedSeq, Seq, EmptySeq
+from advprompter.utils import apply_repetition_penalty
 
 @torch.no_grad()
 def advPrompterOpt(cfg, instruct, target, prompter, target_llm):

@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 
 import wandb
-from utils import (
+from advprompter.utils import (
     add_dummy_dim_to_slice,
     dotdict,
     expand_for_broadcast_tensor,

@@ -35,15 +35,15 @@ train:
       loss_delta: 1.0
       jailbreaking: 1.0
   prompter_optim_params:
-    lr: 5e-4
-  batch_size: 4 #2 #8
+    lr: 1e-4
+  batch_size: 2 #2 #8
   q_params:
     max_new_tokens: 30
     num_beams: 4 #1 #4 #2 #4 #2
     repetition_penalty: 1.2
     top_k: 48 #8 #48 # try to reduce this or increase num_chunks if doesn't fit to memory
     num_chunks: 6 #12 # 6 #8 #6 #4 #1  # process top_k iteratively in chunks, helps reduce memory, should divide top_k
-    lambda_val: 1000 #100 # w2 in AutoDAN paper, controls perplexity vs loss tradeoff (50-100 is good)
+    lambda_val: 150 #100 # w2 in AutoDAN paper, controls perplexity vs loss tradeoff (50-100 is good)
     candidates:
       do_sample: true
       temperature: 0.6

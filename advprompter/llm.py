@@ -8,8 +8,8 @@ from contextlib import nullcontext
 import torch
 import torch.nn as nn
 
-from sequence import Seq, MergedSeq, msg_to_seq
-from utils import (
+from advprompter.sequence import Seq, MergedSeq, msg_to_seq
+from advprompter.utils import (
     ReturnStruct,
     autocast_decorator,
     compute_perplexity,
@@ -17,10 +17,12 @@ from utils import (
     llm_loader,
     loss_seqs,
 )
+from config import DELIMITERS
+from data_generation.struq import compute_expert_labels
 
 
 class LLM(nn.Module):
-    def __init__(self, params, verbose=False) -> None:
+    def __init__(self, params, full_cfg=None, verbose=False) -> None:
         super().__init__()
         self.params = params
         self.verbose = verbose
@@ -37,11 +39,32 @@ class LLM(nn.Module):
                 # We might run into trouble here because the Seq class will automatically treat any eos_token as a pad_token and set the padding mask to 0 for this token
                 self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.device = self.params.llm_params.device
+        self.device = self.model.device
         if self.params.allow_non_ascii:
             self.disallowed_ids = None
         else:
             self.disallowed_ids = get_nonascii_toks(self.tokenizer, device=self.device)
+
+        self.pass_expert_labels     = params.llm_params.pass_expert_labels
+        self.delimiter = None
+        if full_cfg:
+            self.delimiter  = full_cfg.target_llm.delimiter
+            self.num_labels = full_cfg.target_llm.num_expert_labels
+            self.user_inst_seperator = self.tokenizer(DELIMITERS[self.delimiter][0],
+                                       return_tensors="pt",
+                                       padding=False,
+                                       truncation=False,
+                                       add_special_tokens=False).input_ids[0]  # starting delimiter of data input
+            self.data_seperator = self.tokenizer(DELIMITERS[self.delimiter][1],
+                                       return_tensors="pt",
+                                       padding=False,
+                                       truncation=False,
+                                       add_special_tokens=False).input_ids[0]  # starting delimiter of data input
+            self.response_seperator = self.tokenizer(DELIMITERS[self.delimiter][2],
+                                           return_tensors="pt",
+                                           padding=False,
+                                           truncation=False,
+                                           add_special_tokens=False).input_ids[0]  # starting delimiter of response
 
     def save_pretrained(self, save_path):
         self.model.save_pretrained(save_path, save_embedding_layers=True)
@@ -51,17 +74,45 @@ class LLM(nn.Module):
         mask = query_seq.mask
         sorted_mask, indices = torch.sort(mask.long(), dim=1, stable=True)
 
-        with self.model.disable_adapter() if use_basemodel else nullcontext():
-            if query_seq.is_hard:
-                ids = query_seq.ids
-                sorted_ids = ids.gather(1, indices)
+        if query_seq.is_hard:
+            ids = query_seq.ids # (bs, seq_len)
+            sorted_ids = ids.gather(1, indices)
+            if self.pass_expert_labels:
+                expert_labels = [compute_expert_labels(x,
+                                                       self.user_inst_seperator.to(x.device),
+                                                       self.data_seperator.to(x.device),
+                                                       self.response_seperator.to(x.device),
+                                                       self.num_labels
+                                                       ) for x in sorted_ids]
+                expert_labels = torch.stack(expert_labels).to(sorted_ids.device)
+                shifted_sorted_pred_logits = self.model(
+                    input_ids=sorted_ids,
+                    attention_mask=sorted_mask,
+                    expert_labels=expert_labels
+                ).logits
+            else:
                 shifted_sorted_pred_logits = self.model(
                     input_ids=sorted_ids, attention_mask=sorted_mask
                 ).logits
+        else:
+            embeds = query_seq.get_embed(self.embedding_matrix)
+            indices_extended = indices[:, :, None].repeat(1, 1, embeds.shape[-1])
+            sorted_embeds = embeds.gather(1, indices_extended)
+
+            if self.pass_expert_labels:
+                expert_labels = [compute_expert_labels(x,
+                                                       self.user_inst_seperator.to(x.device),
+                                                       self.data_seperator.to(x.device),
+                                                       self.response_seperator.to(x.device),
+                                                       self.num_labels
+                                                       ) for x in indices]
+                expert_labels = torch.stack(expert_labels).to(sorted_embeds.device)
+                shifted_sorted_pred_logits = self.model(
+                    inputs_embeds=sorted_embeds,
+                    attention_mask=sorted_mask,
+                    expert_labels=expert_labels
+                ).logits
             else:
-                embeds = query_seq.get_embed(self.embedding_matrix)
-                indices_extended = indices[:, :, None].repeat(1, 1, embeds.shape[-1])
-                sorted_embeds = embeds.gather(1, indices_extended)
                 shifted_sorted_pred_logits = self.model(
                     inputs_embeds=sorted_embeds, attention_mask=sorted_mask
                 ).logits
@@ -173,7 +224,7 @@ class LLM(nn.Module):
         query_seq = self.prepare_prompt(context, up_to_key=key)
 
         mask = query_seq.mask
-        ids = query_seq.ids
+        ids  = query_seq.ids
         sorted_mask, indices = torch.sort(mask.long(), dim=1, stable=True)
         sorted_ids = ids.gather(1, indices)
 
@@ -188,7 +239,24 @@ class LLM(nn.Module):
         gen_params = dict(self.params.gen_params)
         gen_params["max_new_tokens"] = max_new_tokens
 
-        with self.model.disable_adapter() if use_basemodel else nullcontext():
+        if self.pass_expert_labels:
+            expert_labels = [compute_expert_labels(x,
+                                                   self.user_inst_seperator.to(x.device),
+                                                   self.data_seperator.to(x.device),
+                                                   self.response_seperator.to(x.device),
+                                                   self.num_labels
+                                                   ) for x in sorted_ids]
+            expert_labels = torch.stack(expert_labels).to(sorted_ids.device)
+            output = self.model.generate(
+                input_ids=sorted_ids,
+                attention_mask=sorted_mask,
+                expert_labels=expert_labels,
+                generation_config=generation_config,
+                pad_token_id=self.tokenizer.pad_token_id,
+                return_dict_in_generate=True,
+                **gen_params,
+            )
+        else:
             output = self.model.generate(
                 input_ids=sorted_ids,
                 attention_mask=sorted_mask,

@@ -3,19 +3,19 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-IGNORE_INDEX = -100
-DEFAULT_TOKENS = {'pad_token': '[PAD]', 'eos_token': '</s>', 'bos_token': '<s>', 'unk_token': '<unk>'}
+IGNORE_INDEX        = -100
+DEFAULT_TOKENS      = {'pad_token': '[PAD]', 'eos_token': '</s>', 'bos_token': '<s>', 'unk_token': '<unk>'}
 TEXTUAL_DELM_TOKENS = ['instruction', 'input',  'response', '###',    ':']
 SPECIAL_DELM_TOKENS = ['[INST]', '[INPT]', '[RESP]', '[MARK]', '[COLN]']
-FILTERED_TOKENS = SPECIAL_DELM_TOKENS + ['##']
-OTHER_DELM_TOKENS = {
-    'mark': ['{s}', '|{s}|', '<{s}>', '[{s}]', '<|{s}|>', '[|{s}|]', '<[{s}]>', '\'\'\'{s}\'\'\'', '***{s}***'],
-    'inst': ['Command', 'Rule', 'Prompt', 'Task'],
-    'inpt': ['Data', 'Context', 'Text'],
-    'resp': ['Output', 'Answer', 'Reply'],
-    'user': ['', 'Prompter ', 'User ', 'Human '],
-    'asst': ['', 'Assistant ', 'Chatbot ', 'Bot ', 'GPT ', 'AI '],
-}
+FILTERED_TOKENS     = SPECIAL_DELM_TOKENS + ['##']
+OTHER_DELM_TOKENS   = {
+                            'mark': ['{s}', '|{s}|', '<{s}>', '[{s}]', '<|{s}|>', '[|{s}|]', '<[{s}]>', '\'\'\'{s}\'\'\'', '***{s}***'],
+                            'inst': ['Command', 'Rule', 'Prompt', 'Task'],
+                            'inpt': ['Data', 'Context', 'Text'],
+                            'resp': ['Output', 'Answer', 'Reply'],
+                            'user': ['', 'Prompter ', 'User ', 'Human '],
+                            'asst': ['', 'Assistant ', 'Chatbot ', 'Bot ', 'GPT ', 'AI '],
+                       }
 OTHER_DELM_FOR_TEST = 2
 
 DELIMITERS = {
@@ -53,6 +53,7 @@ DELIMITERS = {
 
 SYS_INPUT = "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.\n\n"
 SYS_NO_INPUT = SYS_INPUT.replace(", paired with an input that provides further context", "")
+SYS_INPUT_HARMLESS = "You are an AI chatbot. You should be helpful and harmless to users."
 
 PROMPT_FORMAT = {}
 for name, delm in DELIMITERS.items():

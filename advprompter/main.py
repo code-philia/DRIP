@@ -5,7 +5,7 @@
 #
 from copy import copy
 from datetime import datetime
-
+import gc
 import csv
 import os
 import hydra
@@ -22,10 +22,10 @@ from tqdm import tqdm
 from collections import defaultdict
 
 import wandb
-from llm import LLM
-from sequence import MergedSeq, Seq, collate_fn
+from advprompter.llm import LLM
+from advprompter.sequence import MergedSeq, Seq, collate_fn
 import warnings
-from utils import (
+from advprompter.utils import (
     Metrics,
     check_jailbroken,
     check_affirmative,
@@ -36,9 +36,11 @@ from utils import (
     read_csv_file,
     hit_rate_at_n,
 )
-from advprompteropt import advPrompterOpt, evaluate_prompt
+from advprompter.advprompteropt import advPrompterOpt, evaluate_prompt
+import os
 
-setproctitle.setproctitle("llm-attacks-train")
+os.environ['CUDA_LAUNCH_BLOCKING']="1"
+os.environ['TORCH_USE_CUDA_DSA'] = "1"
 
 
 class Workspace:
@@ -56,7 +58,7 @@ class Workspace:
         tqdm.write("Initializing Prompter...")
         self.prompter = LLM(cfg.prompter, verbose=self.verbose)
         tqdm.write("Initializing TargetLLM...")
-        self.target_llm = LLM(cfg.target_llm, verbose=self.verbose)
+        self.target_llm = LLM(cfg.target_llm, cfg, verbose=self.verbose)
 
         self.test_prefixes = read_csv_file(self.cfg.data.test_prefixes_pth)
         self.affirmative_prefixes = read_csv_file(
@@ -197,9 +199,7 @@ class Workspace:
             context = self.batch_to_context(batch)
             instruct = context.instruct
             target = context.target
-            log_sequences = (
-                batch_idx % self.cfg.wandb_params.log_sequences_every.train == 0
-            )
+            log_sequences = False
             with torch.no_grad():
 
                 # generate initial suffix
@@ -291,7 +291,8 @@ class Workspace:
             )
 
             prompter_tf_opt = self.finetune_prompter()
-
+            gc.collect()
+            torch.cuda.empty_cache()
             log_data(
                 log_table=self.train_table,
                 metrics=train_metrics,
@@ -368,17 +369,17 @@ class Workspace:
             torch.relu(loss_batch - loss_opt_batch)
             * self.cfg.train.replay_buffer.priority_factor.loss_delta
         )
-        if self.cfg.train.replay_buffer.priority_factor.jailbreaking > 0:
-            _, target_llm_ar_opt_jailbroken_list = check_jailbroken(
-                seq=target_llm_ar_opt.response_sample,
-                test_prefixes=self.test_prefixes,
-            )
-            jailbroken = torch.tensor(
-                target_llm_ar_opt_jailbroken_list, device=loss_batch.device
-            )
-            priority += (
-                jailbroken * self.cfg.train.replay_buffer.priority_factor.jailbreaking
-            )
+        # if self.cfg.train.replay_buffer.priority_factor.jailbreaking > 0:
+        #     _, target_llm_ar_opt_jailbroken_list = check_jailbroken(
+        #         seq=target_llm_ar_opt.response_sample,
+        #         test_prefixes=self.test_prefixes,
+        #     )
+        #     jailbroken = torch.tensor(
+        #         target_llm_ar_opt_jailbroken_list, device=loss_batch.device
+        #     )
+        #     priority += (
+        #         jailbroken * self.cfg.train.replay_buffer.priority_factor.jailbreaking
+        #     )
         for i, prio in enumerate(priority):
             if prio > 0:
                 datapoint = (
@@ -729,3 +730,4 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
+
