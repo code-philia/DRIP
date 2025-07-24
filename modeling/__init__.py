@@ -1,2 +1,4 @@
-from .llama_instsep import LlamaForCausalLMMoE, LlamaMoEConfig
-from .llama_instfuse import LlamaForCausalLMFuse, LlamaFuseConfig
+from .llama_instsep import LlamaForCausalLMMoE, LlamaForCausalLMMoEV2, LlamaMoEConfig
+from .llama_instfuse import LlamaForCausalLMFuse, LlamaForCausalLMFuseV2, LlamaFuseConfig
+from .mistral_instsep import MistralForCausalLMMoE, MistralForCausalLMMoEV2, MistralMoEConfig
+from .mistral_instfuse import MistralForCausalLMFuse, MistralForCausalLMFuseV2, MistralFuseConfig
