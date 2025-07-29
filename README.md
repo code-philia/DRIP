@@ -1,192 +1,74 @@
+# Introduction
 
-# CLEAN Training on StruQ benchmark
 
-# StruQ 
+# Setup
 
-## meta-llama/Llama-3.2-3B
+Install requirements
+
 ```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train.py \
---model_name_or_path meta-llama/Llama-3.2-3B --data_path datasets/alpaca_data_cleaned.json datasets/sep/sep_data_cleaned.json \
---output_dir meta-llama/Llama-3.2-3b-SpclSpclSpcl-struq-sep-none \
---num_train_epochs 3 --bf16 True --per_device_train_batch_size 4 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 \
---fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config.json
+conda create --name prompt python=3.10
+conda activate prompt
+conda install pip
+pip install -r requirements.txt
 ```
 
-## ministral/Ministral-3b-instruct
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train.py \
---model_name_or_path ministral/Ministral-3b-instruct --data_path datasets/alpaca_data_cleaned.json datasets/sep/sep_data_cleaned.json \
---output_dir ministral/ministral-3b-SpclSpclSpcl-struq-sep-none \
---num_train_epochs 3 --bf16 True --per_device_train_batch_size 4 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 \
---fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config_mistral.json
-```
+# Training
 
-## llama8b
-
-
-# ISE
-## meta-llama/Llama-3.2-3B
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_ise.py \
---model_name_or_path meta-llama/Llama-3.2-3B --data_path datasets/alpaca_data_cleaned.json datasets/sep/sep_data_cleaned.json \
---output_dir meta-llama/Llama-3.2-3b-SpclSpclSpcl-ise-sep-none \
---num_train_epochs 3 --per_device_train_batch_size 4 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 \
---fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config.json
-```
-
-## ministral/Ministral-3b-instruct
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_ise_mistral.py \
---model_name_or_path ministral/Ministral-3b-instruct --data_path datasets/alpaca_data_cleaned.json datasets/sep/sep_data_cleaned.json \
---output_dir ministral/ministral-3b-SpclSpclSpcl-ise-sep-none \
---num_train_epochs 3 --per_device_train_batch_size 4 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 \
---fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config_mistral.json
-```
-
-# POSSEP
-## meta-llama/Llama-3.2-3B
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_possep.py \
---model_name_or_path meta-llama/Llama-3.2-3B --data_path datasets/alpaca_data_cleaned.json datasets/sep/sep_data_cleaned.json \
---output_dir meta-llama/Llama-3.2-3b-SpclSpclSpcl-possep-sep-none \
---num_train_epochs 3 --per_device_train_batch_size 4 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 \
---fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config.json
-```
-
-## ministral/Ministral-3b-instruct
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_possep_mistral.py \
---model_name_or_path ministral/Ministral-3b-instruct --data_path datasets/alpaca_data_cleaned.json datasets/sep/sep_data_cleaned.json \
---output_dir ministral/ministral-3b-SpclSpclSpcl-possep-sep-none \
---num_train_epochs 3 --per_device_train_batch_size 4 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 \
---fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config_mistral.json
-```
-
-# InstFuse
-## meta-llama/Llama-3.2-3B
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_instfuse.py \
---model_name_or_path meta-llama/Llama-3.2-3B --data_path datasets/alpaca_data_cleaned.json datasets/sep/sep_data_cleaned.json \
---output_dir meta-llama/Llama-3.2-3b-SpclSpclSpcl-instfuse-sep-none \
---num_train_epochs 3 --per_device_train_batch_size 6 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 \
---fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config.json
-```
-
-## ministral/Ministral-3b-instruct
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_instfuse_mistral.py \
---model_name_or_path ministral/Ministral-3b-instruct --data_path datasets/alpaca_data_cleaned.json datasets/sep/sep_data_cleaned.json \
---output_dir ministral/ministral-3b-SpclSpclSpcl-instfuse-sep-none \
---num_train_epochs 3 --per_device_train_batch_size 4 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 \
---fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config_mistral.json
-```
-
-# CLEAN Training on Instruction Hierarchy benchmark
-
-## StruQ 
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_hier.py \
---model_name_or_path meta-llama/Llama-3.2-3B \
---data_path datasets/InstructHierarchy/long_prompt_follow-10k.json datasets/InstructHierarchy/long_prompt_ori-10k.json datasets/InstructHierarchy/ultrachat-10k-split-final.json  datasets/InstructHierarchy/user_follow_system-10k.json \
---output_dir meta-llama-hier/Llama-3.2-3b-SpclSpclSpcl-struq-clean \
---num_train_epochs 3 --per_device_train_batch_size 8 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 --fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config.json
-```
-
-## ISE
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_ise_hier.py \
---model_name_or_path meta-llama/Llama-3.2-3B \
---data_path datasets/InstructHierarchy/long_prompt_follow-10k.json datasets/InstructHierarchy/long_prompt_ori-10k.json datasets/InstructHierarchy/ultrachat-10k-split-final.json  datasets/InstructHierarchy/user_follow_system-10k.json \
---output_dir meta-llama-hier/Llama-3.2-3b-SpclSpclSpcl-ise-clean \
---num_train_epochs 3 --per_device_train_batch_size 8 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 --fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config.json
-```
-
-## Possep
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_possep_hier.py \
---model_name_or_path meta-llama/Llama-3.2-3B \
---data_path datasets/InstructHierarchy/long_prompt_follow-10k.json datasets/InstructHierarchy/long_prompt_ori-10k.json datasets/InstructHierarchy/ultrachat-10k-split-final.json  datasets/InstructHierarchy/user_follow_system-10k.json \
---output_dir meta-llama-hier/Llama-3.2-3b-SpclSpclSpcl-possep-clean \
---num_train_epochs 3 --per_device_train_batch_size 8 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 --fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config.json
-```
-
-## Ours
-```bash
-python -m torch.distributed.run --nproc_per_node=8 --master_port=29951 train_instfuse_hier.py \
---model_name_or_path meta-llama/Llama-3.2-3B \
---data_path datasets/InstructHierarchy/long_prompt_follow-10k.json datasets/InstructHierarchy/long_prompt_ori-10k.json datasets/InstructHierarchy/ultrachat-10k-split-final.json  datasets/InstructHierarchy/user_follow_system-10k.json \
---output_dir meta-llama-hier/Llama-3.2-3b-SpclSpclSpcl-instfuse-clean \
---num_train_epochs 3 --per_device_train_batch_size 8 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8  --save_strategy "epoch" \
---learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --attack SpclSpclSpcl_None --model_max_length 512 --bf16 True --dataloader_num_workers 4 --fsdp "full_shard auto_wrap" --fsdp_config training/config/fsdp_config.json
-```
+| **Base Model**                              | **Dataset** | **Prompt Injection Defense Solutions** | **Bash Scripts**                                     |
+|----------------------------------------------|-------------|-----------------------------------------|------------------------------------------------------|
+| **meta-llama/Llama-3.2-3B**                  | **Alpaca**  | StruQ                                   | `./scripts/llama3b/alpaca/struq_alpaca.sh`             |
+|                                              |             | ISE                                     | `./scripts/llama3b/alpaca/ise_alpaca.sh`               |
+|                                              |             | PosSep                                  | `./scripts/llama3b/alpaca/possep_alpaca.sh`            |
+|                                              |             | InstFuse                                | `./scripts/llama3b/alpaca/instfuse_alpaca.sh`          |
+| **meta-llama/Llama-3.2-3B**                  | **SEP**     | *StruQ*                                 | `./scripts/llama3b/sep/struq_alpaca.sh`                |
+|                                              |             | *ISE*                                   | `./scripts/llama3b/sep/ise_alpaca.sh`                  |
+|                                              |             | *PosSep*                                | `./scripts/llama3b/sep/possep_alpaca.sh`               |
+|                                              |             | *InstFuse*                              | `./scripts/llama3b/sep/instfuse_alpaca.sh`             |
+| **ministral/Ministral-3b-instruct**          | **Alpaca**  | *StruQ*                                 | `./scripts/ministral3b/alpaca/struq_alpaca.sh`         |
+|                                              |             | *ISE*                                   | `./scripts/ministral3b/alpaca/ise_alpaca.sh`           |
+|                                              |             | *PosSep*                                | `./scripts/ministral3b/alpaca/possep_alpaca.sh`        |
+|                                              |             | *InstFuse*                              | `./scripts/ministral3b/alpaca/instfuse_alpaca.sh`      |
+| **ministral/Ministral-3b-instruct**          | **SEP**     | *StruQ*                                 | `./scripts/ministral3b/sep/struq_alpaca.sh`            |
+|                                              |             | *ISE*                                   | `./scripts/ministral3b/sep/ise_alpaca.sh`              |
+|                                              |             | *PosSep*                                | `./scripts/ministral3b/sep/possep_alpaca.sh`           |
+|                                              |             | *InstFuse*                              | `./scripts/ministral3b/sep/instfuse_alpaca.sh`         |
 
 
 # Evaluation
 
-## StruQ
+When prompted, please specify the CUDA device ID (i.e. a single number) you want to run the model with.
+And also point to your saved model path.
+
+## NL injection attack
+
 ```bash
-python -m testing.test --model_name_or_path meta-llama/Llama-3.2-3b-SpclSpclSpcl-struq-none \
---attack none naive ignore_0 completion_real escape_separation
+./scripts/nl_injection1.sh
 ```
 
-## ISE
 ```bash
-python -m testing.test --model_name_or_path meta-llama/Llama-3.2-3b-SpclSpclSpcl-ise-none  \
---attack none naive ignore_0 completion_real escape_separation \
---pass_expert_labels --customized_model_class "LlamaForCausalLMMoE"
+./scripts/nl_injection2.sh
 ```
 
-## PosSep
 ```bash
-python -m testing.test --model_name_or_path meta-llama/Llama-3.2-3b-SpclSpclSpcl-possep-none \
---attack none naive ignore_0 completion_real escape_separation \
---pass_expert_labels --customized_model_class "LlamaForCausalLMMoEV2"
+./scripts/nl_injection3.sh
 ```
 
-## Ours
+## Gradient-based attack
+
+### GCG
+
 ```bash
-python -m testing.test --model_name_or_path meta-llama/Llama-3.2-3b-SpclSpclSpcl-instfuse-none  \
---attack none naive ignore_0 completion_real escape_separation \
---pass_expert_labels --customized_model_class "LlamaForCausalLMFuse"
+./scripts/gcg_injection.sh
 ```
 
-# GCG Attack
-## StruQ
+### AdvPrompter
+
 ```bash
-python -m testing.test_gcg --model_name_or_path meta-llama/Llama-3.2-3B-SpclSpclSpcl-struq
+./scripts/advprompter_injection.sh
 ```
 
-## Secalign
-```bash
-python -m testing.test_gcg --model_name_or_path meta-llama/Llama-3.2-3B-SpclSpclSpcl-secalign
-```
+## SEP benchmark attack
 
-## ISE
 ```bash
-python -m testing.test_gcg --model_name_or_path meta-llama/Llama-3.2-3B-SpclSpclSpcl-ise \
---pass_expert_labels --customized_model_class "LlamaForCausalLMMoE"
+./scripts/sep.sh
 ```
-
-## Ours
-```bash
-python -m testing.test_gcg --model_name_or_path meta-llama/Llama-3.2-3B-SpclSpclSpcl-instfuse \
---pass_expert_labels --customized_model_class "LlamaForCausalLMFuse"
-```
-
-# Test on SEP
-```bash
-python -m testing.sep.test_sep --model_name_or_path meta-llama/Llama-3.2-3b-SpclSpclSpcl-instfuse-none \
---pass_expert_labels --customized_model_class "LlamaForCausalLMFuse"
-```
-
