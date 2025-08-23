@@ -5,7 +5,7 @@
 
 import os
 import argparse
-from struq import jload, jdump
+from data_generation.struq import jload, jdump
 from copy import deepcopy
 import numpy as np
 

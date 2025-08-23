@@ -5,22 +5,22 @@ from transformers import Trainer
 from transformers.utils import logging
 from modeling.llama_instsep import LlamaForCausalLMMoE, LlamaMoEConfig, LlamaForCausalLMMoEV2
 from data_generation.struq import jload, make_supervised_data_module
-
+from peft import LoraConfig, get_peft_model
+import os
 logger = logging.get_logger(__name__)
 
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments, AttackArguments))
     model_args, data_args, training_args, attack_args = parser.parse_args_into_dataclasses()
     data_args.attack = attack_args.attack 
-    if 'Instruct' in model_args.model_name_or_path:
-        assert 'SpclSpclSpcl' not in data_args.attack
+
     print('\n\n' + training_args.output_dir + '\n\n')
 
     config = LlamaMoEConfig.from_pretrained(
         model_args.model_name_or_path,
     )
 
-    model = LlamaForCausalLMMoE.from_pretrained(
+    model = LlamaForCausalLMMoEV2.from_pretrained(
         model_args.model_name_or_path,
         ignore_mismatched_sizes=True,
         config=config,
@@ -37,43 +37,40 @@ def train():
         use_fast=True,
         batched=True
     )
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # add new tokens into the dictionary => update model embedding layer
-    special_tokens_dict = {"pad_token": DEFAULT_TOKENS['pad_token'],
-                           "eos_token": DEFAULT_TOKENS['eos_token'],
-                           "bos_token": DEFAULT_TOKENS['bos_token'],
-                           "unk_token": DEFAULT_TOKENS['unk_token'],
-                           "additional_special_tokens": SPECIAL_DELM_TOKENS}
-
-    smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model)
-
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"✅ {name} is trainable")
-
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Trainable Params: {trainable_params} / {total_params} ({100 * trainable_params / total_params:.2f}%)")
+    lora_config = LoraConfig(
+        r=16,
+        lora_alpha=8,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],
+        modules_to_save=["lm_head", "embed_tokens"],
+    )
+    # Create the PEFT model
+    peft_model = get_peft_model(model, lora_config)
 
     # Construct dataloader
-    frontend_delimiters = 'SpclSpclSpcl' if 'SpclSpclSpcl' in data_args.attack else find_closest_match(model_args.model_name_or_path, DELIMITERS)
-    data_module = make_supervised_data_module(tokenizer=tokenizer,
-                                              data_args=data_args,
-                                              frontend_delimiters=frontend_delimiters,
-                                              downsample=training_args.downsample)
+    frontend_delimiters = data_args.attack.split("_")[0]
+    data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args, frontend_delimiters=frontend_delimiters, downsample=training_args.downsample)
     if not training_args.downsample and training_args.lr_scale:
         training_args.learning_rate /= data_module["train_dataset"].data_copy_count
 
     trainer = Trainer(
-        model=model,
+        model=peft_model,
         tokenizer=tokenizer,
         args=training_args,
         **data_module
     )
-
+    trainer.model.print_trainable_parameters()
     trainer.train()
-    trainer.save_state()
-    trainer.save_model(output_dir=training_args.output_dir)
+
+    merged_model = trainer.model.merge_and_unload()
+    merged_model.save_pretrained(training_args.output_dir, safe_serialization=True)
+    tokenizer.save_pretrained(training_args.output_dir)
+
     config = trainer.model.config  # Access the config of the model
     config.save_pretrained(training_args.output_dir)
 

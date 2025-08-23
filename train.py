@@ -11,12 +11,12 @@ import trl
 from data_generation.struq import SupervisedDataset, smart_tokenizer_and_embedding_resize, make_supervised_data_module_orig, find_closest_match
 from config import IGNORE_INDEX, DEFAULT_TOKENS, SPECIAL_DELM_TOKENS, TEXTUAL_DELM_TOKENS, DELIMITERS
 import difflib
+from peft import LoraConfig, get_peft_model
+import os
 
 @dataclass
 class ModelArguments: 
     model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
-    base_model_name_or_path: Optional[str] = field(default="")
-    extra_config_path: Optional[str] = field(default="")
     window_size: int = field(default=0, metadata={"help": "Window size for the sliding window attention."})
     padding_side: str = field(default="right", metadata={"help": "Padding side for tokenization."})
 
@@ -29,8 +29,7 @@ class DataArguments:
 
 @dataclass
 class AttackArguments: 
-    attack: str = field(default='TextTextText_None', metadata={"help": "Attack type for SFT/Align"})
-    alignment: str = field(default='none', metadata={"help": "Alignment type."})
+    attack:    str = field(default='TextTextText_None', metadata={"help": "Attack type for SFT/Align"})
 
 @dataclass
 class TrainingArguments(trl.ORPOConfig): #transformers.TrainingArguments): #
@@ -45,18 +44,13 @@ class TrainingArguments(trl.ORPOConfig): #transformers.TrainingArguments): #
     beta: float = field(default=0.1)
     ref_model_init_kwargs: Optional[str] = field(default=None)
     precompute_ref_log_probs: Optional[bool] = field(default=False)
-    desirable_weight: Optional[float] = field(default=1)
-    undesirable_weight: Optional[float] = field(default=1)
     report_to: Optional[str] = "wandb"
     resume_from_checkpoint: Optional[bool] = field(default=True)
-
 
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments, AttackArguments))
     model_args, data_args, training_args, attack_args = parser.parse_args_into_dataclasses()
-    data_args.attack = attack_args.attack 
-    if 'Instruct' in model_args.model_name_or_path:
-        assert 'SpclSpclSpcl' not in data_args.attack
+    data_args.attack = attack_args.attack
     print('\n\n' + training_args.output_dir + '\n\n')
 
     model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -75,6 +69,7 @@ def train():
         batched=True
     )
 
+    ## Add special tokens (special delimiters)
     special_tokens_dict = dict()
     special_tokens_dict["pad_token"] = DEFAULT_TOKENS['pad_token'] ###
     special_tokens_dict["eos_token"] = DEFAULT_TOKENS['eos_token']
@@ -83,7 +78,19 @@ def train():
     special_tokens_dict["additional_special_tokens"] = SPECIAL_DELM_TOKENS ### 
     smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model)
 
-    frontend_delimiters = 'SpclSpclSpcl' if 'SpclSpclSpcl' in data_args.attack else find_closest_match(model_args.model_name_or_path, DELIMITERS)
+    lora_config = LoraConfig(
+        r=16,
+        lora_alpha=8,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],
+        modules_to_save=["lm_head", "embed_tokens"],
+    )
+    # Create the PEFT model
+    peft_model = get_peft_model(model, lora_config)
+
+    frontend_delimiters = data_args.attack.split("_")[0]
     data_module = make_supervised_data_module_orig(tokenizer=tokenizer,
                                                    data_args=data_args,
                                                    frontend_delimiters=frontend_delimiters,
@@ -91,22 +98,21 @@ def train():
     if not training_args.downsample and training_args.lr_scale:
         training_args.learning_rate /= data_module["train_dataset"].data_copy_count
         
-    trainer = transformers.Trainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+    trainer = transformers.Trainer(
+        model=peft_model,
+        tokenizer=tokenizer,
+        args=training_args,
+        **data_module
+    )
+    trainer.model.print_trainable_parameters()
     trainer.train()
-    trainer.save_state()
-    trainer.save_model(output_dir=training_args.output_dir)
 
+    merged_model = trainer.model.merge_and_unload()
+    merged_model.save_pretrained(training_args.output_dir, safe_serialization=True)
+    tokenizer.save_pretrained(training_args.output_dir)
+
+    config = trainer.model.config  # Access the config of the model
+    config.save_pretrained(training_args.output_dir)
     
 if __name__ == "__main__":
     train()
-    # model = "huggyllama/llama-7b"
-    # data_path = "datasets/davinci_003_outputs.json"
-    # attack = "SpclSpclSpcl_NaiveCompletion"
-    # model_max_length = 512
-    # lr = 2e-5
-
-    # --model_name_or_path meta-llama/Llama-3.2-1B --data_path datasets/alpaca_data_cleaned.json --bf16 True  --output_dir debug  --num_train_epochs 3  --per_device_train_batch_size 2 --per_device_eval_batch_size 2
-    #             --gradient_accumulation_steps 8  --evaluation_strategy "no"  --save_strategy "no"  --save_total_limit 1  --learning_rate 2e-5  --weight_decay 0.  --warmup_ratio 0.03 \
-    #             --lr_scheduler_type "cosine" --logging_steps 1 \
-    #             --fsdp "full_shard auto_wrap" --fsdp_transformer_layer_cls_to_wrap "LlamaDecoderLayer" \
-    #             --tf32 True --attack SpclSpclSpcl_NaiveCompletion --model_max_length 512
