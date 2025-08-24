@@ -1,24 +1,23 @@
 #!/bin/bash
 
-SCRIPT_PATH="train_instfuse_twophase.py"
-BASELINE="instfuse"
-BASE_MODEL="meta-llama/Meta-Llama-3-8B-Instruct"
-DATA_PATH=("datasets/sep/sep_data_pure_clean.json" "datasets/sep/sep_data_pure_injected.json")
-
+SCRIPT_PATH="train.py"
+BASELINE="struq"
+BASE_MODEL="mistralai/Ministral-8B-Instruct-2410"
+DATA_PATH="datasets/sep/sep_data_cleaned.json"
 FILENAME=$(basename "$DATA_PATH")
 PREFIX=${FILENAME%%_*}
-FSDP_CONFIG="training/config/fsdp_config.json"
-DELIMITER="TextTextText"
+FSDP_CONFIG="training/config/fsdp_config_mistral.json"
+DELIMITER="SpclSpclSpcl"
 
-SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none-twophase"
+SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none"
 
-BATCH_SIZE=6
+BATCH_SIZE=4
 EPOCH=1
 
 http_proxy=127.0.0.1:7890 https_proxy=127.0.0.1:7890 \
 python -m torch.distributed.run --nproc_per_node=6 --master_port=29951 "$SCRIPT_PATH" \
   --model_name_or_path "$BASE_MODEL" \
-  --data_path "${DATA_PATH[@]}" \
+  --data_path "$DATA_PATH" \
   --output_dir "$SAVE_PATH" \
   --num_train_epochs "$EPOCH" \
   --bf16 True \
