@@ -17,7 +17,7 @@ import torch
 import re
 from omegaconf import DictConfig, OmegaConf
 from torchrl.data import ListStorage, ReplayBuffer
-from torchrl.data.replay_buffers.samplers import PrioritizedSampler
+from torchrl.data.replay_buffers.samplers import PrioritizedSampler, RandomSampler
 from tqdm import tqdm
 from collections import defaultdict
 
@@ -40,8 +40,7 @@ from advprompter.advprompteropt import advPrompterOpt, evaluate_prompt
 import os
 
 os.environ['CUDA_LAUNCH_BLOCKING']="1"
-os.environ['TORCH_USE_CUDA_DSA'] = "1"
-
+os.environ['HYDRA_FULL_ERROR'] = "1"
 
 class Workspace:
     def __init__(self, cfg):
@@ -56,7 +55,7 @@ class Workspace:
             self.init_wandb()
 
         tqdm.write("Initializing Prompter...")
-        self.prompter = LLM(cfg.prompter, verbose=self.verbose)
+        self.prompter  = LLM(cfg.prompter, verbose=self.verbose)
         tqdm.write("Initializing TargetLLM...")
         self.target_llm = LLM(cfg.target_llm, cfg, verbose=self.verbose)
 
@@ -149,6 +148,7 @@ class Workspace:
             alpha=self.cfg.train.replay_buffer.priority_alpha,
             beta=1.0,
         )
+        # sampler = RandomSampler() # I cannot make PrioritizedSampler work
         self.replay_buffer = ReplayBuffer(
             storage=ListStorage(self.cfg.train.replay_buffer.size),
             batch_size=self.cfg.train.batch_size,
@@ -369,17 +369,17 @@ class Workspace:
             torch.relu(loss_batch - loss_opt_batch)
             * self.cfg.train.replay_buffer.priority_factor.loss_delta
         )
-        # if self.cfg.train.replay_buffer.priority_factor.jailbreaking > 0:
-        #     _, target_llm_ar_opt_jailbroken_list = check_jailbroken(
-        #         seq=target_llm_ar_opt.response_sample,
-        #         test_prefixes=self.test_prefixes,
-        #     )
-        #     jailbroken = torch.tensor(
-        #         target_llm_ar_opt_jailbroken_list, device=loss_batch.device
-        #     )
-        #     priority += (
-        #         jailbroken * self.cfg.train.replay_buffer.priority_factor.jailbreaking
-        #     )
+        if self.cfg.train.replay_buffer.priority_factor.jailbreaking > 0:
+            _, target_llm_ar_opt_jailbroken_list = check_jailbroken(
+                seq=target_llm_ar_opt.response_sample,
+                test_prefixes=self.test_prefixes,
+            )
+            jailbroken = torch.tensor(
+                target_llm_ar_opt_jailbroken_list, device=loss_batch.device
+            )
+            priority += (
+                jailbroken * self.cfg.train.replay_buffer.priority_factor.jailbreaking
+            )
         for i, prio in enumerate(priority):
             if prio > 0:
                 datapoint = (
@@ -409,7 +409,7 @@ class Workspace:
                 batch_size=self.cfg.train.batch_size
             )
             prompter_tf_opt = self.finetune_prompter_step(
-                instruct=context.instruct, suffix=context.suffix
+                instruct=context.instruction, suffix=context.suffix
             )
             if self.verbose:
                 tqdm.write(

@@ -14,7 +14,7 @@ data:
   affirmative_prefixes_pth: "${data.data_dir}/prompt_injected_prefixes.csv"
 
 wandb_params:
-  entity: "sizhe-chen"
+  entity: "lindsey98"
   project: "advprompter"
   log_sequences_every: 
     train: 100 #1000

@@ -27,8 +27,7 @@ from transformers import (
 )
 from typing import Dict
 import transformers
-from modeling import LlamaForCausalLMFuse, LlamaForCausalLMMoE, LlamaFuseConfig, LlamaMoEConfig, LlamaForCausalLMFuseV2, LlamaForCausalLMMoEV2
-
+from testing.test import load_model_and_tokenizer
 
 def hit_rate_at_n(jb_stat, n):
     jb_sum_at_n = np.sum(jb_stat[:, :n], axis=1)
@@ -441,63 +440,10 @@ def llm_loader(llm_params, verbose=False):
         f" Loading model: {llm_params.model_name} from {llm_params.checkpoint}...",
     )
     mem_before = get_total_allocated_memory()
-
-    use_fast = "pythia" in llm_params.checkpoint
-    tokenizer = AutoTokenizer.from_pretrained(
-        llm_params.checkpoint,
-        model_max_length=512,
-        padding_side="right",
-        use_fast=use_fast,
-        legacy=False,
-    )
-
-    if llm_params.customized_model_class:
-        if llm_params.customized_model_class == "LlamaForCausalLMFuse": # fixme: support more
-            config = LlamaFuseConfig.from_pretrained(llm_params.checkpoint)
-            model = LlamaForCausalLMFuse.from_pretrained(
-                    llm_params.checkpoint,
-                    config=config,
-                    low_cpu_mem_usage=True,
-                    device_map="auto",
-                    trust_remote_code=True
-                )
-        elif llm_params.customized_model_class == "LlamaForCausalLMFuseV2": # fixme: support more
-            config = LlamaFuseConfig.from_pretrained(llm_params.checkpoint)
-            model = LlamaForCausalLMFuseV2.from_pretrained(
-                    llm_params.checkpoint,
-                    config=config,
-                    low_cpu_mem_usage=True,
-                    device_map="auto",
-                    trust_remote_code=True
-                )
-        elif llm_params.customized_model_class == "LlamaForCausalLMMoE":
-            config = LlamaMoEConfig.from_pretrained(llm_params.checkpoint)
-            model = LlamaForCausalLMMoE.from_pretrained(
-                llm_params.checkpoint,
-                config=config,
-                low_cpu_mem_usage=True,
-                device_map="auto",
-                trust_remote_code=True
-            )
-        elif llm_params.customized_model_class == "LlamaForCausalLMMoEV2":
-            config = LlamaMoEConfig.from_pretrained(llm_params.checkpoint)
-            model = LlamaForCausalLMMoEV2.from_pretrained(
-                llm_params.checkpoint,
-                config=config,
-                low_cpu_mem_usage=True,
-                device_map="auto",
-                trust_remote_code=True
-            )
-        else:
-            raise NotImplementedError
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            llm_params.checkpoint,
-            low_cpu_mem_usage=True,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-
+    base_model_path = llm_params.checkpoint.split("-SpclSpclSpcl")[0].split("-TextTextText")[0]
+    model, tokenizer = load_model_and_tokenizer(base_model_path=base_model_path,
+                                                trained_model_path=llm_params.checkpoint,
+                                                customized_model_class=llm_params.customized_model_class)
     mem_after = get_total_allocated_memory()
 
     if verbose:
@@ -529,7 +475,6 @@ def llm_loader(llm_params, verbose=False):
             lora_config_dct["target_modules"] = [
                 m for m in llm_params.lora_params.lora_config["target_modules"]
             ]
-            #lora_config_dct["task_type"] = TaskType.CAUSAL_LM
             lora_config = LoraConfig(**lora_config_dct)
             model = get_peft_model(model, lora_config)
 
@@ -543,7 +488,6 @@ def get_embedding_matrix(model):
     elif (
         isinstance(model, LlamaForCausalLM)
         or isinstance(model, MistralForCausalLM)
-        or isinstance(model, GemmaForCausalLM)
     ):
         return model.base_model.embed_tokens.weight
     elif isinstance(model, GPTNeoXForCausalLM):
