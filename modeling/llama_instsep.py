@@ -46,13 +46,6 @@ class LlamaModel(transformers.LlamaModel):
         nn.init.normal_(self.input_shifts.weight, mean=0, std=0.001)
         nn.init.normal_(self.intermediate_shifts.weight, mean=0, std=0.001)
 
-    def enable_hidden_state_tracking(self):
-        self.track_hidden_states = True
-        self.hook.clear()
-
-    def disable_hidden_state_tracking(self):
-        self.track_hidden_states = False
-        self.hook.clear()
 
     def forward(
         self,

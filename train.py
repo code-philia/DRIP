@@ -89,6 +89,7 @@ def train():
     peft_model = get_peft_model(model, lora_config)
 
     frontend_delimiters = data_args.attack.split("_")[0]
+    print(frontend_delimiters)
     data_module = make_supervised_data_module_orig(tokenizer=tokenizer,
                                                    data_args=data_args,
                                                    frontend_delimiters=frontend_delimiters,
@@ -105,10 +106,7 @@ def train():
     trainer.model.print_trainable_parameters()
     trainer.train()
 
-    merged_model = trainer.model.merge_and_unload()
-    merged_model.save_pretrained(training_args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(training_args.output_dir)
-
     config = trainer.model.config  # Access the config of the model
     config.save_pretrained(training_args.output_dir)
     

@@ -9,10 +9,9 @@ from copy import deepcopy
 from torch.utils.data import Dataset
 import logging
 import io, json
-from config import PROMPT_FORMAT, IGNORE_ATTACK_SENTENCES, OTHER_DELM_FOR_TEST, OTHER_DELM_TOKENS, IGNORE_INDEX, \
-    DELIMITERS
+from config import PROMPT_FORMAT, IGNORE_ATTACK_SENTENCES, OTHER_DELM_FOR_TEST, OTHER_DELM_TOKENS, \
+    IGNORE_INDEX, DELIMITERS, SPECIAL_DELM_TOKENS, TEXTUAL_DELM_TOKENS
 import torch
-from config import IGNORE_INDEX, DEFAULT_TOKENS, SPECIAL_DELM_TOKENS, TEXTUAL_DELM_TOKENS, DELIMITERS
 import transformers
 from typing import Dict, Optional, Sequence, Union
 import difflib
@@ -70,10 +69,8 @@ def generate_training_data(data_dicts, prompt_dict_name, attack, frontend_delimi
     prompt_dict = PROMPT_FORMAT[prompt_dict_name]
 
     if attack == 'None':
-        return [
-            prompt_dict["prompt_input"].format_map(example) if example.get("input", "") != "" \
-                else prompt_dict["prompt_no_input"].format_map(example) for example in data_dicts
-        ], [f"{example['output']}{tokenizer.eos_token}" for example in data_dicts]
+        return [prompt_dict["prompt_input"].format_map(example) for example in data_dicts], \
+               [f"{example['output']}{tokenizer.eos_token}" for example in data_dicts]
 
     if attack == 'Completion':
         ref_inst_resp = {}
@@ -84,7 +81,7 @@ def generate_training_data(data_dicts, prompt_dict_name, attack, frontend_delimi
     for i in range(len(data_dicts)):
         # no input => no attack
         if data_dicts[i].get("input", "") == "":
-            sources.append(prompt_dict["prompt_no_input"].format_map(data_dicts[i]))
+            sources.append(prompt_dict["prompt_input"].format_map(data_dicts[i]))
         else:
             # randomly choose another instruction from the same dataset
             injected_sample = deepcopy(np.random.choice(data_dicts)) 
@@ -187,21 +184,29 @@ def _tokenize_fn(strings, tokenizer, frontend_delimiters, compute_gate=False, ad
 
     expert_labels = None
     if compute_gate:
-        user_inst_seperator = tokenizer(DELIMITERS[frontend_delimiters][0],
-                                   return_tensors="pt",
-                                   padding=False,
-                                   truncation=False,
-                                   add_special_tokens=False).input_ids[0]  # starting delimiter of data input
-        data_seperator      = tokenizer(DELIMITERS[frontend_delimiters][1],
-                                   return_tensors="pt",
-                                   padding=False,
-                                   truncation=False,
-                                   add_special_tokens=False).input_ids[0] # starting delimiter of data input
-        response_seperator  = tokenizer(DELIMITERS[frontend_delimiters][2],
-                                       return_tensors="pt",
-                                       padding=False,
-                                       truncation=False,
-                                       add_special_tokens=False).input_ids[0] # starting delimiter of response
+        user_inst_seperator = tokenizer(
+            DELIMITERS[frontend_delimiters][0],
+            return_tensors="pt",
+            padding=False,
+            truncation=False,
+            add_special_tokens=False
+        ).input_ids[0]  # starting delimiter of data input
+
+        data_seperator = tokenizer(
+            DELIMITERS[frontend_delimiters][1],
+            return_tensors="pt",
+            padding=False,
+            truncation=False,
+            add_special_tokens=False
+        ).input_ids[0] # starting delimiter of data input
+
+        response_seperator = tokenizer(
+            DELIMITERS[frontend_delimiters][2],
+            return_tensors="pt",
+            padding=False,
+            truncation=False,
+            add_special_tokens=False
+        ).input_ids[0] # starting delimiter of response
 
         # Find the starting delimiters of Input
         expert_labels = []
@@ -228,14 +233,12 @@ def preprocess(sources, targets, frontend_delimiters, tokenizer):
     examples = [s + t for s, t in zip(sources, targets)]
 
     # input + responses
-    examples_tokenized = _tokenize_fn(examples, tokenizer,
-                                      frontend_delimiters=frontend_delimiters, compute_gate=True)
+    examples_tokenized = _tokenize_fn(examples, tokenizer, frontend_delimiters=frontend_delimiters, compute_gate=True)
     input_ids     = examples_tokenized["input_ids"]
     expert_labels = examples_tokenized["expert_labels"]
 
     # input only => find the input length
-    sources_lengths = _tokenize_fn(sources, tokenizer,
-                                   frontend_delimiters=frontend_delimiters, compute_gate=False)["input_ids_lens"]
+    sources_lengths = _tokenize_fn(sources, tokenizer, frontend_delimiters=frontend_delimiters, compute_gate=False)["input_ids_lens"]
 
     labels = deepcopy(input_ids)
     for label, source_len in zip(labels, sources_lengths):
@@ -262,8 +265,7 @@ class SupervisedDataset(Dataset):
 
             list_data_dict = jload(data_path)
 
-            source_clean, targets_clean = generate_training_data(list_data_dict, prompt_dict_name,
-                                                                 'None', frontend_delimiters, tokenizer)
+            source_clean, targets_clean = generate_training_data(list_data_dict, prompt_dict_name, 'None', frontend_delimiters, tokenizer)
 
             if attacks == 'None':
                 sources, targets = source_clean, targets_clean
@@ -378,11 +380,10 @@ def get_embedding_indices(tokenizer):
                      if tokenizer.decode(i) == "#"] # get the padding token ID
     return init_values, ignore_values
 
-
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
     tokenizer: transformers.PreTrainedTokenizer,
-    model: transformers.PreTrainedModel,
+    model: transformers.PreTrainedModel
 ):
     """Resize tokenizer and embedding.
 
@@ -394,8 +395,8 @@ def smart_tokenizer_and_embedding_resize(
     REAL_DELIMITERS_INIT_EMBD_IND, _ = get_embedding_indices(tokenizer) # get embeddings for ['instruction', 'input',  'response', '###',  ':']
 
     if num_new_tokens > 0:
-        input_embeddings = model.get_input_embeddings().weight.clean_data
-        output_embeddings = model.get_output_embeddings().weight.clean_data
+        input_embeddings = model.get_input_embeddings().weight.data
+        output_embeddings = model.get_output_embeddings().weight.data
 
         input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
         output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
@@ -408,7 +409,8 @@ def smart_tokenizer_and_embedding_resize(
             input_embeddings[-num_new_tokens+i+1]  = input_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
             output_embeddings[-num_new_tokens+i+1] = output_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
 
-def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters, downsample=True) -> Dict:
+def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters, downsample=True
+                                ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = SupervisedDataset(tokenizer=tokenizer,
                                       data_path_list=data_args.data_path_list,
@@ -420,7 +422,8 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
                 eval_dataset=None,
                 data_collator=data_collator)
 
-def make_supervised_data_module_orig(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters, downsample=True) -> Dict:
+def make_supervised_data_module_orig(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters, downsample=True
+                                     ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = SupervisedDataset(tokenizer=tokenizer,
                                       data_path_list=data_args.data_path_list,
@@ -432,6 +435,3 @@ def make_supervised_data_module_orig(tokenizer: transformers.PreTrainedTokenizer
                 eval_dataset=None,
                 data_collator=data_collator)
 
-def find_closest_match(model_name, delimiter_dict):
-    closest_matches = difflib.get_close_matches(model_name, delimiter_dict.keys(), n=1, cutoff=0.5)
-    return closest_matches[0] if closest_matches else None

@@ -54,7 +54,10 @@ def train():
 
     # Construct dataloader
     frontend_delimiters = data_args.attack.split("_")[0]
-    data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args, frontend_delimiters=frontend_delimiters, downsample=training_args.downsample)
+    data_module = make_supervised_data_module(tokenizer=tokenizer,
+                                              data_args=data_args,
+                                              frontend_delimiters=frontend_delimiters,
+                                              downsample=training_args.downsample)
     if not training_args.downsample and training_args.lr_scale:
         training_args.learning_rate /= data_module["train_dataset"].data_copy_count
 
@@ -67,8 +70,6 @@ def train():
     trainer.model.print_trainable_parameters()
     trainer.train()
 
-    merged_model = trainer.model.merge_and_unload()
-    merged_model.save_pretrained(training_args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(training_args.output_dir)
 
     config = trainer.model.config  # Access the config of the model

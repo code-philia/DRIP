@@ -88,9 +88,6 @@ class MistralModel(transformers.MistralModel):
         )
         hidden_states = inputs_embeds
 
-        # create position embeddings to be shared across the decoder layers
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
@@ -123,7 +120,6 @@ class MistralModel(transformers.MistralModel):
                     output_attentions,
                     use_cache,
                     cache_position,
-                    position_embeddings,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -134,7 +130,6 @@ class MistralModel(transformers.MistralModel):
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                     cache_position=cache_position,
-                    position_embeddings=position_embeddings,
                 )
 
             hidden_states = layer_outputs[0]
@@ -177,7 +172,7 @@ class MistralForCausalLMFuse(transformers.MistralForCausalLM):
         self.vocab_size      = config.vocab_size
         self.hidden_size     = config.hidden_size
         self.lm_head         = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.residual_weight = nn.Parameter(torch.tensor(0.01)) # 0.5 weight assigned to the last instruction token
+        self.residual_weight = nn.Parameter(torch.tensor([0.01])) # 0.5 weight assigned to the last instruction token
         self.response_label  = 2
         self.instruct_label  = 0
         self.post_init()

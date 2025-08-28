@@ -16,6 +16,27 @@ def train():
 
     print('\n\n' + training_args.output_dir + '\n\n')
 
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
+        padding_side=model_args.padding_side,
+        use_fast=True,
+        batched=True
+    )
+    tokenizer.pad_token    = tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # Construct dataloader
+    frontend_delimiters = data_args.attack.split("_")[0]
+    data_module = make_supervised_data_module(tokenizer=tokenizer,
+                                              data_args=data_args,
+                                              frontend_delimiters=frontend_delimiters,
+                                              downsample=training_args.downsample)
+    if not training_args.downsample and training_args.lr_scale:
+        training_args.learning_rate /= data_module["train_dataset"].data_copy_count
+
+
     config = MistralMoEConfig.from_pretrained(
         model_args.model_name_or_path,
     )
@@ -29,17 +50,6 @@ def train():
     if model_args.window_size > 0:
         model.config.window = model_args.window_size
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        model_max_length=training_args.model_max_length,
-        padding_side=model_args.padding_side,
-        use_fast=True,
-        batched=True
-    )
-    tokenizer.pad_token    = tokenizer.eos_token
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-
     lora_config = LoraConfig(
         r=16,
         lora_alpha=8,
@@ -52,15 +62,6 @@ def train():
     # Create the PEFT model
     peft_model = get_peft_model(model, lora_config)
 
-    # Construct dataloader
-    frontend_delimiters = data_args.attack.split("_")[0]
-    data_module = make_supervised_data_module(tokenizer=tokenizer,
-                                              data_args=data_args,
-                                              frontend_delimiters=frontend_delimiters,
-                                              downsample=training_args.downsample)
-    if not training_args.downsample and training_args.lr_scale:
-        training_args.learning_rate /= data_module["train_dataset"].data_copy_count
-
     trainer = Trainer(
         model=peft_model,
         tokenizer=tokenizer,
@@ -70,8 +71,6 @@ def train():
     trainer.model.print_trainable_parameters()
     trainer.train()
 
-    merged_model = trainer.model.merge_and_unload()
-    merged_model.save_pretrained(training_args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(training_args.output_dir)
 
     config = trainer.model.config  # Access the config of the model

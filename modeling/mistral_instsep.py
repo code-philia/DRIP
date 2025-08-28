@@ -45,14 +45,6 @@ class MistralModel(transformers.MistralModel):
         nn.init.normal_(self.input_shifts.weight, mean=0, std=0.001)
         nn.init.normal_(self.intermediate_shifts.weight, mean=0, std=0.001)
 
-    def enable_hidden_state_tracking(self):
-        self.track_hidden_states = True
-        self.hook.clear()
-
-    def disable_hidden_state_tracking(self):
-        self.track_hidden_states = False
-        self.hook.clear()
-
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -119,9 +111,6 @@ class MistralModel(transformers.MistralModel):
             if self.track_hidden_states:
                 self.hook[f'after_input_shift'] = hidden_states.detach().clone()
 
-        # create position embeddings to be shared across the decoder layers
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
@@ -142,7 +131,6 @@ class MistralModel(transformers.MistralModel):
                     output_attentions,
                     use_cache,
                     cache_position,
-                    position_embeddings,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -154,7 +142,6 @@ class MistralModel(transformers.MistralModel):
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                     cache_position=cache_position,
-                    position_embeddings=position_embeddings,
                 )
 
             hidden_states = layer_outputs[0]
@@ -395,8 +382,6 @@ class MistralModelV2(transformers.MistralModel):
 
         ## Add gap in positional embedding
         position_ids        = position_ids + self.d_gap * expert_labels.to(hidden_states.dtype)
-        # create position embeddings to be shared across the decoder layers
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
@@ -417,7 +402,6 @@ class MistralModelV2(transformers.MistralModel):
                     output_attentions,
                     use_cache,
                     cache_position,
-                    position_embeddings,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -428,7 +412,6 @@ class MistralModelV2(transformers.MistralModel):
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                     cache_position=cache_position,
-                    position_embeddings=position_embeddings,
                 )
 
             hidden_states = layer_outputs[0]

@@ -23,7 +23,6 @@ from gcg.utils import (
     build_prompt,
     get_prefix_cache,
 )
-from config import DELIMITERS
 logger = logging.getLogger(__name__)
 
 Device = int | str | torch.device
@@ -337,7 +336,6 @@ class TransformersModel:
             # Update suffixes
             batch_suffix_ids = suffix_ids[i * batch_size : (i + 1) * batch_size]
             batch_targets    = targets[i * batch_size : (i + 1) * batch_size]
-
             batch_suffix_ids = batch_suffix_ids.to(device, non_blocking=True)
             batch_targets = batch_targets.to(device, non_blocking=True)
             bs = len(batch_targets)
@@ -446,7 +444,6 @@ class TransformersModel:
         target_ids    = target_ids.to(self.device, non_blocking=True)
         if target_ids.ndim == 2:
             target_ids.squeeze_(0)
-
         input_embeds = self.embed_layer(input_ids)
         input_embeds.unsqueeze_(0)
         input_embeds.requires_grad_(True)

@@ -22,19 +22,11 @@ DELIMITERS = {
     "TextTextText": ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
                      '<|eot_id|><|start_header_id|>user<|end_header_id|>',
                      '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
+    "TextTextTextMistral": ['<s>[INST] <<SYS>>', ' <</SYS>>', '[/INST]'],
     "SpclSpclSpcl": [SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[0] + SPECIAL_DELM_TOKENS[4],
                      SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[1] + SPECIAL_DELM_TOKENS[4],
                      SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[2] + SPECIAL_DELM_TOKENS[4]],
-    "llama-7b": ['[INST] ', '', ' [/INST]'],
-    "Mistral-7B-Instruct-v0.1": ['<s>[INST] ' , ' ', ' [/INST]'],
-    "Llama-3.2-3B":
-        ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
-         '<|eot_id|><|start_header_id|>user<|end_header_id|>',
-         '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
-    "Llama-3.2-3B-Instruct":
-        ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
-         '<|eot_id|><|start_header_id|>user<|end_header_id|>',
-         '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
+    "Mistral-7B-Instruct-v0.3": ['<s>[INST] <<SYS>>', ' <</SYS>>', '[/INST]'],
     "Meta-Llama-3-8B-Instruct": 
         ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>', 
          '<|eot_id|><|start_header_id|>user<|end_header_id|>',

@@ -146,8 +146,6 @@ def train():
     trainer.train()
 
     # Merge and unload LoRA
-    merged_model = trainer.model.merge_and_unload()
-    merged_model.save_pretrained(training_args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(training_args.output_dir)
 
     config = trainer.model.config  # Access the config of the model

@@ -1,6 +1,5 @@
 import transformers
-import torch
-from train import smart_tokenizer_and_embedding_resize, ModelArguments, DataArguments, TrainingArguments, AttackArguments
+from train import ModelArguments, DataArguments, TrainingArguments, AttackArguments
 from transformers.utils import logging
 from modeling import MistralForCausalLMFuse, MistralFuseConfig
 from peft import LoraConfig, get_peft_model
@@ -72,8 +71,6 @@ def train():
     trainer.train()
 
     # Merge and unload LoRA
-    merged_model = trainer.model.merge_and_unload()
-    merged_model.save_pretrained(training_args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(training_args.output_dir)
 
     config = trainer.model.config  # Access the config of the model

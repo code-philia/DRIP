@@ -27,8 +27,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AttackResult:
-    """Attack's output."""
-
     best_loss: float
     best_suffix: str
     num_queries: int
@@ -36,8 +34,6 @@ class AttackResult:
 
 
 class BaseAttack:
-    """Base class for attacks."""
-
     name: str = "base"  # Name of the attack
     valid_skip_modes = ("none", "seen", "visited")
 
@@ -51,7 +47,6 @@ class BaseAttack:
         eval_func: Any,
         **kwargs,
     ) -> None:
-        """Initialize the attack."""
         _ = kwargs  # Unused
         self._num_steps: int = config.num_steps
         self._fixed_params: bool = config.fixed_params
@@ -317,17 +312,15 @@ class BaseAttack:
             self._step = i
             self._on_step_begin()
 
-            dynamic_input_ids = self._suffix_manager.get_input_ids(messages,
-                                                                   adv_suffix,
-                                                                   target)[0]
+            dynamic_input_ids = self._suffix_manager.get_input_ids(messages, adv_suffix, target)[0]
             expert_labels = compute_expert_labels(dynamic_input_ids,
                                                   user_inst_seperator=self.delm_ids[0],
                                                   data_seperator=self.delm_ids[1],
                                                   response_seperator=self.delm_ids[2],
                                                   num_labels=self.num_labels)
 
-            dynamic_input_ids = dynamic_input_ids[ num_fixed_tokens:]
-            expert_labels     = expert_labels[ num_fixed_tokens:]
+            dynamic_input_ids = dynamic_input_ids[num_fixed_tokens:]
+            expert_labels     = expert_labels[num_fixed_tokens:]
             dynamic_input_ids = dynamic_input_ids.to("cuda")
             expert_labels     = expert_labels.to("cuda")
             optim_ids = dynamic_input_ids[optim_slice]
