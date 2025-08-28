@@ -1,14 +1,9 @@
 {
-  "activation_cpu_offload": false,
-  "cpu_offload": false,
+  "auto_wrap_policy": {
+    "transformer_layer_cls_to_wrap": ["MistralDecoderLayer"]
+  },
   "use_orig_params": true,
   "sync_module_states": true,
   "forward_prefetch": true,
-  "limit_all_gathers": true,
-  "mixed_precision": true,
-  "auto_wrap_policy": {
-    "class_name": [
-      "MistralDecoderLayer"
-      ]
-  }
+  "limit_all_gathers": true
 }
