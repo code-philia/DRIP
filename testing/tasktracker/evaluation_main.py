@@ -18,64 +18,64 @@ if __name__ == "__main__":
     with open(benign_response_name, 'r') as f:
         model_responses = json.load(f)
 
-    judge_prompt = open("./testing/tasktracker/judge_prompt.txt").read()
-    batch_requests = []
-
-    for it, data in enumerate(model_responses):
-        user_task = data["user_task"]
-        text = data["text"]
-        extracted_task = data["extracted_task"]
-        primary_ai_response = data["response"]
-        instance_prompt = f"""Now let's start.
-
-                                User's task: {user_task}
-
-                                Accompanying text: {text}
-
-                                Attacker's inserted task: {extracted_task}
-
-                                Primary AI answer: {primary_ai_response}
-
-                                """
-        batch_requests.append(
-                    {"custom_id": f"request-{it}",
-                     "method": "POST",
-                     "url": "/v1/chat/completions",
-                     "body": {
-                        "model": "gpt-4o-mini-2024-07-18",
-                        "messages": [
-                            {"role": "system", "content": judge_prompt},
-                            {"role": "user", "content": instance_prompt},
-                        ],
-                         "max_completion_tokens": 500,
-                         "temperature": 0
-                        }
-                    }
-                )
-
-    with open(f'./datasets/tasktracker/{model_path.stem}_submit.jsonl', 'w') as outfile:
-        for entry in batch_requests:
-            json.dump(entry, outfile)
-            outfile.write('\n')
-
-    # # Submit batch file
-    client = OpenAI()
-    batch_input_file = client.files.create(
-        file=open(f'./datasets/tasktracker/{model_path.stem}_submit.jsonl', "rb"),
-        purpose="batch"
-    )
-
-    # Execute batch request
-    batch_input_file_id = batch_input_file.id
-    client.batches.create(
-        input_file_id=batch_input_file_id,
-        endpoint="/v1/chat/completions",
-        completion_window="24h",
-        metadata={
-            "description": "nightly eval job"
-        }
-    )
-    exit()
+    # judge_prompt = open("./testing/tasktracker/judge_prompt.txt").read()
+    # batch_requests = []
+    #
+    # for it, data in enumerate(model_responses):
+    #     user_task = data["user_task"]
+    #     text = data["text"]
+    #     extracted_task = data["extracted_task"]
+    #     primary_ai_response = data["response"]
+    #     instance_prompt = f"""Now let's start.
+    #
+    #                             User's task: {user_task}
+    #
+    #                             Accompanying text: {text}
+    #
+    #                             Attacker's inserted task: {extracted_task}
+    #
+    #                             Primary AI answer: {primary_ai_response}
+    #
+    #                             """
+    #     batch_requests.append(
+    #                 {"custom_id": f"request-{it}",
+    #                  "method": "POST",
+    #                  "url": "/v1/chat/completions",
+    #                  "body": {
+    #                     "model": "gpt-4o-mini-2024-07-18",
+    #                     "messages": [
+    #                         {"role": "system", "content": judge_prompt},
+    #                         {"role": "user", "content": instance_prompt},
+    #                     ],
+    #                      "max_completion_tokens": 500,
+    #                      "temperature": 0
+    #                     }
+    #                 }
+    #             )
+    #
+    # with open(f'./datasets/tasktracker/{model_path.stem}_submit.jsonl', 'w') as outfile:
+    #     for entry in batch_requests:
+    #         json.dump(entry, outfile)
+    #         outfile.write('\n')
+    #
+    # # # Submit batch file
+    # client = OpenAI()
+    # batch_input_file = client.files.create(
+    #     file=open(f'./datasets/tasktracker/{model_path.stem}_submit.jsonl', "rb"),
+    #     purpose="batch"
+    # )
+    #
+    # # Execute batch request
+    # batch_input_file_id = batch_input_file.id
+    # client.batches.create(
+    #     input_file_id=batch_input_file_id,
+    #     endpoint="/v1/chat/completions",
+    #     completion_window="24h",
+    #     metadata={
+    #         "description": "nightly eval job"
+    #     }
+    # )
+    # exit()
 
     '''Collect back'''
     with open(f'./datasets/tasktracker/{model_path.stem}_submit.jsonl', 'r', encoding='utf-8') as f_in:

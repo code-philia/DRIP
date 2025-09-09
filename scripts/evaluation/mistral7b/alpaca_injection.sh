@@ -38,13 +38,13 @@ EXTRA_FLAGS=""
 
 case "$MODEL_PATH" in
     *instfuse*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class Qwen2ForCausalLMFuse"
+        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMFuse"
         ;;
     *ise*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class Qwen2ForCausalLMMoE"
+        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMMoE"
         ;;
     *possep*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class Qwen2ForCausalLMMoEV2"
+        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMMoEV2"
         ;;
 esac
 

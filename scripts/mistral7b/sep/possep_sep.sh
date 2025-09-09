@@ -1,15 +1,15 @@
 #!/bin/bash
 
-SCRIPT_PATH="train_instfuse_mistral.py"
-BASELINE="instfuse"
-BASE_MODEL="mistralai/Ministral-8B-Instruct-2410"
+SCRIPT_PATH="train_possep_mistral.py"
+BASELINE="possep"
+BASE_MODEL="mistralai/Mistral-7B-Instruct-v0.3"
 DATA_PATH="datasets/sep/sep_data_cleaned.json"
 FILENAME=$(basename "$DATA_PATH")
 PREFIX=${FILENAME%%_*}
 FSDP_CONFIG="training/config/fsdp_config_mistral.json"
-DELIMITER="TextTextText"
+DELIMITER="TextTextTextMistral"
 
-SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none-origdata"
+SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none"
 
 BATCH_SIZE=4
 EPOCH=1

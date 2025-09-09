@@ -25,24 +25,32 @@ from config import (
 )
 from modeling import LlamaForCausalLMFuse, LlamaForCausalLMFuseV2, LlamaForCausalLMMoE, LlamaForCausalLMMoEV2, LlamaMoEConfig, LlamaFuseConfig
 from modeling import MistralForCausalLMFuse, MistralForCausalLMFuseV2, MistralForCausalLMMoE, MistralForCausalLMMoEV2, MistralMoEConfig, MistralFuseConfig
+from modeling import Qwen2ForCausalLMFuse, Qwen2ForCausalLMFuseV2, Qwen2ForCausalLMMoE, Qwen2ForCausalLMMoEV2, Qwen2MoEConfig, Qwen2FuseConfig
 import re
-from torch import nn
 from typing import Optional
+from transformers import StoppingCriteria, StoppingCriteriaList
+import hashlib
+from typing import Dict, List, Tuple, Optional
+import json
 
 logger = logging.getLogger(__name__)
 import os
 from tqdm import tqdm
 os.environ['HTTP_PROXY']  = 'http://127.0.0.1:7890'
 os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
+os.environ['TRANSFORMERS_CACHE'] = "/mnt/sda/hf_cache"
 
 def load_model_and_tokenizer(base_model_path,
                              trained_model_path,
                              customized_model_class,
                              tokenizer_path=None,
-                             device_map: Optional[int]=None, **kwargs):
+                             device_map: Optional[int]=None,
+                             **kwargs):
 
     tokenizer_path = trained_model_path if tokenizer_path is None else tokenizer_path
-    tokenizer      = transformers.AutoTokenizer.from_pretrained(tokenizer_path, use_fast=False, use_auth_token=True)
+    tokenizer      = transformers.AutoTokenizer.from_pretrained(tokenizer_path,
+                                                                use_fast=True,
+                                                                use_auth_token=True)
     tokenizer.model_max_length = 512  ### the default value is too large for model.generation_config.max_new_tokens
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -71,18 +79,42 @@ def load_model_and_tokenizer(base_model_path,
                                                               config=config,
                                                               torch_dtype=torch.float16,
                                                               device_map=device_map)
-            # elif customized_model_class == "MistralForCausalLMFuse":
-            #     config = MistralFuseConfig.from_pretrained(trained_model_path)
-            #     model = MistralForCausalLMFuse.from_pretrained(trained_model_path, config=config, torch_dtype=torch.float16,
-            #                                                    device_map=device_map)
-            # elif customized_model_class == "MistralForCausalLMMoE":
-            #     config = MistralMoEConfig.from_pretrained(trained_model_path)
-            #     model = MistralForCausalLMMoE.from_pretrained(trained_model_path, config=config, torch_dtype=torch.float16,
-            #                                                   device_map=device_map)
-            # elif customized_model_class == "MistralForCausalLMMoEV2":
-            #     config = MistralMoEConfig.from_pretrained(trained_model_path)
-            #     model = MistralForCausalLMMoEV2.from_pretrained(trained_model_path, config=config, torch_dtype=torch.float16,
-            #                                                     device_map=device_map)
+            elif customized_model_class == "MistralForCausalLMFuse":
+                config = MistralFuseConfig.from_pretrained(trained_model_path)
+                model = MistralForCausalLMFuse.from_pretrained(trained_model_path,
+                                                               config=config,
+                                                               torch_dtype=torch.float16,
+                                                               device_map=device_map)
+            elif customized_model_class == "MistralForCausalLMMoE":
+                config = MistralMoEConfig.from_pretrained(trained_model_path)
+                model = MistralForCausalLMMoE.from_pretrained(trained_model_path,
+                                                              config=config,
+                                                              torch_dtype=torch.float16,
+                                                              device_map=device_map)
+            elif customized_model_class == "MistralForCausalLMMoEV2":
+                config = MistralMoEConfig.from_pretrained(trained_model_path)
+                model = MistralForCausalLMMoEV2.from_pretrained(trained_model_path,
+                                                                config=config,
+                                                                torch_dtype=torch.float16,
+                                                                device_map=device_map)
+            elif customized_model_class == "Qwen2ForCausalLMFuse":
+                config = Qwen2FuseConfig.from_pretrained(trained_model_path)
+                model  = Qwen2ForCausalLMFuse.from_pretrained(trained_model_path,
+                                                               config=config,
+                                                               torch_dtype=torch.float16,
+                                                               device_map=device_map)
+            elif customized_model_class == "Qwen2ForCausalLMMoE":
+                config = Qwen2MoEConfig.from_pretrained(trained_model_path)
+                model  = Qwen2ForCausalLMMoE.from_pretrained(trained_model_path,
+                                                              config=config,
+                                                              torch_dtype=torch.float16,
+                                                              device_map=device_map)
+            elif customized_model_class == "Qwen2ForCausalLMMoEV2":
+                config = Qwen2MoEConfig.from_pretrained(trained_model_path)
+                model  = Qwen2ForCausalLMMoEV2.from_pretrained(trained_model_path,
+                                                                config=config,
+                                                                torch_dtype=torch.float16,
+                                                                device_map=device_map)
         except Exception as e:
             logger.error(f"Error loading custom model class {customized_model_class} from {trained_model_path}: {e}")
             raise
@@ -122,16 +154,27 @@ def load_model_and_tokenizer(base_model_path,
 
     return model, tokenizer
 
-def load_full_model(model_name_or_path, customized_model_class, load_model=True, device_map: Optional[int]=None):
-
-    base_model_path = model_name_or_path.split("-SpclSpclSpcl")[0].split("-TextTextText")[0]
-
-    if "SpclSpclSpcl" in model_name_or_path:
+def load_delimiters(model_name, model_name_or_path):
+    if model_name in DELIMITERS.keys():
+        frontend_delimiters = model_name
+    elif "SpclSpclSpcl" in model_name_or_path:
         frontend_delimiters = "SpclSpclSpcl"
+    elif "TextTextTextMistral" in model_name_or_path:
+        frontend_delimiters = "TextTextTextMistral"
+    elif "TextTextTextQwen" in model_name_or_path:
+        frontend_delimiters = "TextTextTextQwen"
     elif "TextTextText" in model_name_or_path:
         frontend_delimiters = "TextTextText"
     else:
-        frontend_delimiters = "TextTextText"
+        raise NotImplementedError
+    return frontend_delimiters
+
+def load_full_model(model_name_or_path, customized_model_class, load_model=True, device_map: Optional[int]=None):
+
+    base_model_path = model_name_or_path.split("-SpclSpclSpcl")[0].split("-TextTextText")[0]
+    model_name = os.path.basename(model_name_or_path)
+
+    frontend_delimiters = load_delimiters(model_name, model_name_or_path)
     training_attacks = "NaiveCompletion"
 
     if not load_model:
@@ -147,20 +190,13 @@ def load_full_model(model_name_or_path, customized_model_class, load_model=True,
 
 
 def recursive_filter(s):
-    '''
-    Remove existing delimiters
-    :param s:
-    :return:
-    '''
     filtered = False
     while not filtered:
         for f in FILTERED_TOKENS:
-            if f in s:
-                s = s.replace(f, '')
+            if f in s: s = s.replace(f, '')
         filtered = True
         for f in FILTERED_TOKENS:
-            if f in s:
-                filtered = False
+            if f in s: filtered = False
     return s
 
 def apply_testtime_defense(d_item, data, prompt_format, defense):
@@ -247,10 +283,20 @@ def form_llm_input(data, injection_method, prompt_format, apply_defensive_filter
 
     return llm_input
 
+class StopOnStrings(StoppingCriteria):
+    def __init__(self, stop_strings, tokenizer):
+        self.stop_ids = [tokenizer.encode(s, add_special_tokens=False) for s in stop_strings]
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+        for stop in self.stop_ids:
+            if input_ids[0].tolist()[-len(stop):] == stop:
+                return True
+        return False
 
 @torch.inference_mode()
 def test_model_output(llm_inputs, model, tokenizer,
-                      frontend_delimiters, attack_log_file=None, pass_expert_labels=False, print_results=False):
+                      frontend_delimiters, attack_log_file=None,
+                      pass_expert_labels=False, print_results=False):
     '''
     Efficiently test model outputs in mini-batches to avoid memory overflow.
     '''
@@ -261,11 +307,10 @@ def test_model_output(llm_inputs, model, tokenizer,
     outputs = []
 
     total_samples = len(llm_inputs)
-    terminators = [
-        tokenizer.eos_token_id,
-        tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
     model.generation_config.pad_token_id = tokenizer.pad_token_id
+    stop_criteria = StoppingCriteriaList([StopOnStrings(
+        ["</s>", "<|endoftext|>", "<|eot_id|>", "###"], tokenizer
+    )])
 
     if attack_log_file:
         with open(attack_log_file, 'w', newline='', encoding='utf-8') as outfile:
@@ -287,20 +332,18 @@ def test_model_output(llm_inputs, model, tokenizer,
                 input_ids,
                 expert_labels=expert_labels,
                 attention_mask=torch.ones_like(input_ids),
-                temperature=0,
                 do_sample=False,
-                eos_token_id=terminators,
                 max_new_tokens=max_new_tokens,
+                stopping_criteria=stop_criteria,
                 use_cache=True,  # critical for fast decoding
             )
         else:
             output_ids = model.generate(
                 input_ids,
                 attention_mask=torch.ones_like(input_ids),
-                temperature=0,
                 do_sample=False,
-                eos_token_id=terminators,
                 max_new_tokens=max_new_tokens,
+                stopping_criteria=stop_criteria,
                 use_cache=True,  # critical for fast decoding
             )
         # Decode
@@ -339,6 +382,194 @@ def test_model_output(llm_inputs, model, tokenizer,
                 writer.writerow([lm_input, outp, sample_in_response, sample_begin_with, sample_exact_equal])
 
     return in_response / total_samples, begin_with / total_samples, exact_equal / total_samples, outputs
+
+def create_content_key(instruction: str, input_text: str = "") -> str:
+    """
+    Create a unique key based on instruction and input content.
+    Uses hash to handle long texts efficiently.
+    """
+    # Normalize whitespace and combine instruction + input
+    normalized_instruction = " ".join(instruction.strip().split())
+    normalized_input = " ".join(input_text.strip().split()) if input_text else ""
+
+    # Create a unique key - you can use hash for efficiency or full text for debugging
+    content = f"{normalized_instruction}|||{normalized_input}"
+
+    # For debugging, return first 100 chars. For production, use hash
+    # return content[:100]  # Use this for debugging
+    return hashlib.md5(content.encode()).hexdigest()  # Use this for production
+
+
+def align_model_outputs_with_reference(model_outputs_path: str,
+                                       reference_outputs_path: str,
+                                       output_path: str) -> Tuple[List[Dict], int, int]:
+    """
+    Align model outputs with reference outputs by matching instruction and input content.
+
+    Returns:
+        - Aligned model outputs
+        - Number of matched entries
+        - Number of unmatched entries
+    """
+
+    # Load files
+    print("Loading files...")
+    with open(model_outputs_path, 'r', encoding='utf-8') as f:
+        model_outputs = json.load(f)
+
+    with open(reference_outputs_path, 'r', encoding='utf-8') as f:
+        reference_outputs = json.load(f)
+
+    print(f"Model outputs: {len(model_outputs)} entries")
+    print(f"Reference outputs: {len(reference_outputs)} entries")
+
+    # Create lookup table for reference outputs
+    print("Creating reference lookup table...")
+    reference_lookup = {}
+    for idx, ref_entry in enumerate(reference_outputs):
+        # Extract instruction and input from reference
+        instruction = ref_entry.get('instruction', '')
+        input_text = ref_entry.get('input', '')
+
+        key = create_content_key(instruction, input_text)
+        reference_lookup[key] = {
+            'index': idx,
+            'instruction': instruction,
+            'input': input_text,
+            'output': ref_entry.get('output', ''),
+            'generator': ref_entry.get('generator', ''),
+            'dataset': ref_entry.get('dataset', '')
+        }
+
+    print(f"Created lookup table with {len(reference_lookup)} unique entries")
+
+    # Align model outputs with reference
+    print("Aligning model outputs with reference...")
+    aligned_outputs = []
+    matched_count = 0
+    unmatched_count = 0
+
+    unmatched_examples = []
+
+    for model_entry in model_outputs:
+        # Extract instruction and input from model output
+        instruction = model_entry.get('instruction', '')
+        input_text = model_entry.get('input', '')
+
+        # Handle different possible structures
+        if not instruction and 'dataset' in model_entry:
+            instruction = model_entry['dataset'].get('instruction', '')
+            input_text = model_entry['dataset'].get('input', '')
+
+        key = create_content_key(instruction, input_text)
+
+        if key in reference_lookup:
+            # Found matching reference entry
+            ref_info = reference_lookup[key]
+
+            # Create aligned entry with reference index
+            aligned_entry = {
+                'instruction': instruction,
+                'input': input_text,
+                'output': model_entry.get('output', ''),
+                'index': ref_info['index'],  # Use reference index
+                'generator': model_entry.get('generator', ''),
+                'dataset': model_entry.get('dataset', '')
+            }
+
+            # Preserve any additional fields from model output
+            for key_name, value in model_entry.items():
+                if key_name not in aligned_entry:
+                    aligned_entry[key_name] = value
+
+            aligned_outputs.append(aligned_entry)
+            matched_count += 1
+        else:
+            # No matching reference found
+            unmatched_count += 1
+            unmatched_examples.append({
+                'instruction': instruction[:100] + "..." if len(instruction) > 100 else instruction,
+                'input': input_text[:100] + "..." if len(input_text) > 100 else input_text
+            })
+
+    # Sort by reference index to maintain order
+    aligned_outputs.sort(key=lambda x: x['index'])
+
+    print(f"Alignment complete:")
+    print(f"  Matched: {matched_count}")
+    print(f"  Unmatched: {unmatched_count}")
+
+    if unmatched_examples:
+        print(f"First few unmatched examples:")
+        for i, example in enumerate(unmatched_examples[:3]):
+            print(f"  {i + 1}. Instruction: {example['instruction']}")
+            print(f"     Input: {example['input']}")
+
+    # Save aligned outputs
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(aligned_outputs, f, indent=2, ensure_ascii=False)
+
+    print(f"Aligned outputs saved to: {output_path}")
+
+    return aligned_outputs, matched_count, unmatched_count
+
+
+def check_content_overlap(model_outputs_path: str, reference_outputs_path: str):
+    """
+    Check how much content overlap exists between model and reference outputs.
+    Useful for debugging alignment issues.
+    """
+
+    with open(model_outputs_path, 'r', encoding='utf-8') as f:
+        model_outputs = json.load(f)
+
+    with open(reference_outputs_path, 'r', encoding='utf-8') as f:
+        reference_outputs = json.load(f)
+
+    # Create sets of content keys
+    model_keys = set()
+    ref_keys = set()
+
+    print("Analyzing model outputs...")
+    for entry in model_outputs:
+        instruction = entry.get('instruction', '')
+        input_text = entry.get('input', '')
+
+        if not instruction and 'dataset' in entry:
+            instruction = entry['dataset'].get('instruction', '')
+            input_text = entry['dataset'].get('input', '')
+
+        key = create_content_key(instruction, input_text)
+        model_keys.add(key)
+
+    print("Analyzing reference outputs...")
+    for entry in reference_outputs:
+        instruction = entry.get('instruction', '')
+        input_text = entry.get('input', '')
+        key = create_content_key(instruction, input_text)
+        ref_keys.add(key)
+
+    # Calculate overlap
+    intersection = model_keys & ref_keys
+    model_only = model_keys - ref_keys
+    ref_only = ref_keys - model_keys
+
+    print(f"\nContent Analysis:")
+    print(f"  Model unique entries: {len(model_keys)}")
+    print(f"  Reference unique entries: {len(ref_keys)}")
+    print(f"  Common entries: {len(intersection)}")
+    print(f"  Model-only entries: {len(model_only)}")
+    print(f"  Reference-only entries: {len(ref_only)}")
+    print(f"  Overlap percentage: {len(intersection) / len(ref_keys) * 100:.1f}%")
+
+    return {
+        'model_keys': len(model_keys),
+        'ref_keys': len(ref_keys),
+        'intersection': len(intersection),
+        'model_only': len(model_only),
+        'ref_only': len(ref_only),
+        'overlap_pct': len(intersection) / len(ref_keys) * 100
+    }
 
 
 def test_parser():
@@ -437,9 +668,20 @@ if __name__ == "__main__":
 
             print(f'\nRunning AlpacaEval on {benign_response_name}\n')
 
+            ### validating output
+            print("=== Checking Content Overlap ===")
+            overlap_stats = check_content_overlap(benign_response_name, args.data_path)
+
+            # Step 2: Align outputs by content
+            print("\n=== Aligning Outputs ===")
+            aligned_benign_response_path = benign_response_name.replace("predictions_on_davinci_003_outputs.json",
+                                                                        "predictions_aligned.json")
+            aligned_outputs, matched, unmatched = align_model_outputs_with_reference(
+                benign_response_name, args.data_path, aligned_benign_response_path
+            )
             try:
                 cmd = f'export OPENAI_CLIENT_CONFIG_PATH={args.openai_config_path} && '
-                cmd += f'alpaca_eval --model_outputs {benign_response_name} --reference_outputs {args.data_path}'
+                cmd += f'alpaca_eval --model_outputs {aligned_benign_response_path} --reference_outputs {args.data_path}'
                 alpaca_log = subprocess.check_output(cmd, shell=True, text=True)
             except subprocess.CalledProcessError:
                 alpaca_log = 'None'

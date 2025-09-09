@@ -17,6 +17,7 @@ from torch import nn
 
 logger = logging.get_logger(__name__)
 os.environ["WANDB_WATCH"]="all" # log all parameters gradients
+os.environ['TRANSFORMERS_CACHE'] = "/mnt/sda/hf_cache"
 
 class InstFuseTrainer(Trainer):
     def create_optimizer(self):
@@ -84,6 +85,32 @@ class InstFuseTrainer(Trainer):
         return self.optimizer
 
 
+def get_last_layer_modules(model, base_modules):
+    """Get target modules for the last decoder layer only"""
+    num_layers = len(model.model.layers)
+    last_layer_idx = num_layers - 1
+
+    target_modules = []
+    for module in base_modules:
+        target_modules.append(f"model.layers.{last_layer_idx}.self_attn.{module}")
+        target_modules.append(f"model.layers.{last_layer_idx}.mlp.{module}")
+
+    return target_modules
+
+
+def get_last_half_layer_modules(model, base_modules):
+    """Get target modules for the last half of decoder layers"""
+    num_layers = len(model.model.layers)
+    start_layer_idx = num_layers // 2  # 从中间开始
+
+    target_modules = []
+    for layer_idx in range(start_layer_idx, num_layers):
+        for module in base_modules:
+            target_modules.append(f"model.layers.{layer_idx}.self_attn.{module}")
+            target_modules.append(f"model.layers.{layer_idx}.mlp.{module}")
+
+    return target_modules
+
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments, AttackArguments))
     model_args, data_args, training_args, attack_args = parser.parse_args_into_dataclasses()
@@ -93,9 +120,6 @@ def train():
     config = LlamaFuseConfig.from_pretrained(
         model_args.model_name_or_path,
     )
-
-    # config.residual = True
-    # config.bit_flip = True
 
     model = LlamaForCausalLMFuse.from_pretrained(
         model_args.model_name_or_path,
@@ -120,8 +144,8 @@ def train():
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],
-        modules_to_save=["lm_head", "embed_tokens", "deinstruction_shift"],
+        target_modules="all-linear",
+        modules_to_save=["embed_tokens", "lm_head", "deinstruction_shift"],
     )
     # Create the PEFT model
     peft_model = get_peft_model(model, lora_config)

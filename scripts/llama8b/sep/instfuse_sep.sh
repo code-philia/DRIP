@@ -1,18 +1,20 @@
 #!/bin/bash
 
-SCRIPT_PATH="train_possep_mistral.py"
-BASELINE="possep"
-BASE_MODEL="mistralai/Ministral-8B-Instruct-2410"
-DATA_PATH="datasets/sep/sep_data_cleaned.json"
+SCRIPT_PATH="train_instfuse.py"
+BASELINE="instfuse"
+BASE_MODEL="meta-llama/Llama-3.2-3B"
+DATA_PATH="datasets/sep/sep_data_cleaned_orig_gpt.json"
+# DATA_PATH="datasets/sep/sep_data_cleaned_gpt_v2.json"
 FILENAME=$(basename "$DATA_PATH")
 PREFIX=${FILENAME%%_*}
-FSDP_CONFIG="training/config/fsdp_config_mistral.json"
-DELIMITER="TextTextText"
+FSDP_CONFIG="training/config/fsdp_config.json"
 
-SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none"
+SAVE_PATH="${BASE_MODEL}-SpclSpclSpcl-${BASELINE}-${PREFIX}-none"
+#SAVE_PATH="${BASE_MODEL}-SpclSpclSpcl-${BASELINE}-${PREFIX}-none-origdata"
+# SAVE_PATH="${BASE_MODEL}-SpclSpclSpcl-${BASELINE}-${PREFIX}-none-shufflev2"
 
-BATCH_SIZE=4
 EPOCH=1
+BATCH_SIZE=6
 
 http_proxy=127.0.0.1:7890 https_proxy=127.0.0.1:7890 \
 python -m torch.distributed.run --nproc_per_node=6 --master_port=29951 "$SCRIPT_PATH" \
@@ -25,13 +27,13 @@ python -m torch.distributed.run --nproc_per_node=6 --master_port=29951 "$SCRIPT_
   --per_device_eval_batch_size 1 \
   --gradient_accumulation_steps 8 \
   --save_strategy "epoch" \
-  --learning_rate 1e-4 \
+  --learning_rate 2e-5 \
   --weight_decay 0. \
   --warmup_ratio 0.03 \
   --lr_scheduler_type "cosine" \
   --logging_steps 1 \
   --tf32 True \
-  --attack "${DELIMITER}_None" \
+  --attack SpclSpclSpcl_None \
   --model_max_length 512 \
   --dataloader_num_workers 4 \
   --fsdp "full_shard auto_wrap" \

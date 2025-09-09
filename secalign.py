@@ -1,12 +1,31 @@
 from trl import DPOTrainer
+import trl
 import transformers
+from dataclasses import dataclass, field
 from config import PROMPT_FORMAT, DEFAULT_TOKENS, DELIMITERS, SPECIAL_DELM_TOKENS
 from train import ModelArguments, DataArguments, AttackArguments, smart_tokenizer_and_embedding_resize, TrainingArguments
 from datasets import load_dataset
 from peft import get_peft_model, LoraConfig, TaskType
+from typing import Any, Callable, Optional, Union
+
+@dataclass
+class DPOTrainingArguments(trl.DPOConfig):
+    cache_dir: Optional[str] = field(default=None)
+    optim: str = field(default="adamw_torch")
+    model_max_length: int = field(
+        default=512,
+        metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
+    )
+    downsample: Optional[bool] = field(default=True)
+    lr_scale: Optional[bool] = field(default=True)
+    beta: float = field(default=0.1)
+    ref_model_init_kwargs: Optional[str] = field(default=None)
+    report_to: Optional[str] = "wandb"
+    resume_from_checkpoint: bool = False
+
 
 def align():
-    parser = transformers.HfArgumentParser((ModelArguments, TrainingArguments, DataArguments, AttackArguments))
+    parser = transformers.HfArgumentParser((ModelArguments, DPOTrainingArguments, DataArguments, AttackArguments))
     model_args, training_args, data_args, attack_args = parser.parse_args_into_dataclasses()
 
     train_dataset = load_dataset('json', data_files=data_args.data_path_list, split="train")
@@ -33,7 +52,9 @@ def align():
     special_tokens_dict["bos_token"] = DEFAULT_TOKENS['bos_token']
     special_tokens_dict["unk_token"] = DEFAULT_TOKENS['unk_token']
     special_tokens_dict["additional_special_tokens"] = SPECIAL_DELM_TOKENS ###
-    smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model)
+    smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict,
+                                         tokenizer=tokenizer,
+                                         model=model)
 
     lora_config = LoraConfig(
         r=16,
@@ -49,11 +70,12 @@ def align():
     peft_model.print_trainable_parameters()
     print(training_args.output_dir, '\n\n\n')
 
+    training_args.model_adapter_name = training_args.output_dir
     trainer = DPOTrainer(
         peft_model,
         args=training_args,
         train_dataset=train_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     trainer.train()

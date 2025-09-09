@@ -32,6 +32,7 @@ if __name__ == "__main__":
 
     model_path = args.model_name_or_path
     log_path = f"{model_path}-log" if not os.path.exists(model_path) else model_path
+    os.makedirs(log_path, exist_ok=True)
     benign_response_name = os.path.join(log_path, f"predictions_on_ifeval.jsonl")
 
     # Load previous results if available
@@ -58,13 +59,14 @@ if __name__ == "__main__":
         # First prompt with probe in data
         prompt = data_point["prompt"]
         clean_prompt        = format_prompt(prompt, PROMPT_FORMAT[frontend_delimiters])
+        print(clean_prompt)
         _, _, _, clean_out = test_model_output([clean_prompt],
                                                   model,
                                                   tokenizer,
                                                   attack_log_file=None,
                                                   frontend_delimiters=frontend_delimiters,
                                                   pass_expert_labels=args.pass_expert_labels,
-                                                  print_results=False)
+                                                  print_results=True)
         response: str = clean_out[0][0]
         output.append({
             "prompt": prompt,

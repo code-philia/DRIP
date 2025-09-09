@@ -11,9 +11,9 @@ fschat==0.2.36
 trl==0.8.6
 peft==0.10.0
 accelerate==0.29.0
-transformers==4.43.1
-torch==2.1.2
-torchvision==0.16.2
+transformers==4.55.4
+torch==2.7.1
+torchvision==0.22.1
 alpaca_eval==0.5.0
 pytorch_lightning==2.2.2
 torchrl==0.2.1
@@ -28,3 +28,6 @@ absl
 langdetect
 nltk
 immutabledict
+rouge
+rouge-score
+datasets==2.19.2

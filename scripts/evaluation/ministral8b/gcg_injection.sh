@@ -27,13 +27,13 @@ EXTRA_FLAGS=""
 
 case "$MODEL_PATH" in
     *instfuse*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMFuse"
+        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMFuse"
         ;;
     *ise*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMMoE"
+        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMMoE"
         ;;
     *possep*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMMoEV2"
+        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMMoEV2"
         ;;
 esac
 
@@ -43,10 +43,7 @@ else
     echo "No special model type detected → Running without extra flags"
 fi
 
-echo "Executing test..."
-CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.ifeval.test_ifeval \
---model_name_or_path $MODEL_PATH \
-$EXTRA_FLAGS"
+CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.test_gcg --model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
 
 echo
 echo "⚙ Running:"

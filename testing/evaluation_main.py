@@ -7,7 +7,23 @@ import pandas as pd
 # model_path = Path("meta-llama") / "Meta-Llama-3-8B-Instruct-TextTextText-instfuse-sep-none-origdata"
 # model_path = Path("meta-llama") / "Meta-Llama-3-8B-Instruct-TextTextText-instfuse-sep-none-newdata"
 # model_path = Path("meta-llama") / "Meta-Llama-3-8B-Instruct-SpclSpclSpcl-struq-sep-none"
-model_path = Path("meta-llama") / "Meta-Llama-3-8B-Instruct-SpclSpclSpcl-secalign-sep-none"
+# model_path = Path("meta-llama") / "Meta-Llama-3-8B-Instruct-SpclSpclSpcl-secalign-sep-none"
+
+# model_path = Path("mistralai") / "Mistral-7B-Instruct-v0.3-log"
+# model_path = Path("mistralai") / "Mistral-7B-Instruct-v0.3-SpclSpclSpcl-struq-sep-none"
+# model_path = Path("mistralai") / "Mistral-7B-Instruct-v0.3-TextTextTextMistral-possep-sep-none"
+# model_path = Path("mistralai") / "Mistral-7B-Instruct-v0.3-TextTextTextMistral-ise-sep-none"
+# model_path = Path("mistralai") / "Mistral-7B-Instruct-v0.3-TextTextTextMistral-instfuse-sep-none-origdata"
+# model_path = Path("mistralai") / "Mistral-7B-Instruct-v0.3-TextTextTextMistral-instfuse-sep-none-newdata"
+# model_path = Path("mistralai") / "Mistral-7B-Instruct-v0.3-SpclSpclSpcl-secalign-sep-none"
+
+# model_path = Path("Qwen") / "Qwen2.5-7B-Instruct-log"
+# model_path = Path("Qwen") / "Qwen2.5-7B-Instruct-TextTextTextQwen-instfuse-sep-none-newdata"
+# model_path = Path("Qwen") / "Qwen2.5-7B-Instruct-TextTextTextQwen-instfuse-sep-none-origdata"
+# model_path = Path("Qwen") / "Qwen2.5-7B-Instruct-TextTextTextQwen-possep-sep-none"
+# model_path = Path("Qwen") / "Qwen2.5-7B-Instruct-TextTextTextQwen-ise-sep-none"
+model_path = Path("Qwen") / "Qwen2.5-7B-Instruct-SpclSpclSpcl-struq-sep-none"
+# model_path = Path("Qwen") / "Qwen2.5-7B-Instruct-SpclSpclSpcl-secalign-sep-none"
 
 attack_list = [
                "naive",
@@ -31,7 +47,7 @@ attack_list = [
                "completion_close_ownhash",
                "completion_close_owndouble",
                 "escape_separation",
-                "escape_deletion", "hackaprompt"
+                "escape_deletion",
                ]
 
 defense = "none"

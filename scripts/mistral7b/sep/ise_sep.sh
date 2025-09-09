@@ -2,12 +2,12 @@
 
 SCRIPT_PATH="train_ise_mistral.py"
 BASELINE="ise"
-BASE_MODEL="mistralai/Ministral-8B-Instruct-2410"
+BASE_MODEL="mistralai/Mistral-7B-Instruct-v0.3"
 DATA_PATH="datasets/sep/sep_data_cleaned.json"
 FILENAME=$(basename "$DATA_PATH")
 PREFIX=${FILENAME%%_*}
 FSDP_CONFIG="training/config/fsdp_config_mistral.json"
-DELIMITER="TextTextText"
+DELIMITER="TextTextTextMistral"
 
 SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none"
 

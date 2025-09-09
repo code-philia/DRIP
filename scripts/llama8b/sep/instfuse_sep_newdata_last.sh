@@ -1,15 +1,15 @@
 #!/bin/bash
 
-SCRIPT_PATH="train.py"
-BASELINE="struq"
-BASE_MODEL="mistralai/Ministral-8B-Instruct-2410"
-DATA_PATH="datasets/sep/sep_data_cleaned.json"
+SCRIPT_PATH="train_instfuse_lora.py"
+BASELINE="instfuse"
+BASE_MODEL="meta-llama/Meta-Llama-3-8B-Instruct"
+DATA_PATH="datasets/sep/sep_data_cleaned_orig_gpt.json"
 FILENAME=$(basename "$DATA_PATH")
 PREFIX=${FILENAME%%_*}
-FSDP_CONFIG="training/config/fsdp_config_mistral.json"
-DELIMITER="SpclSpclSpcl"
+FSDP_CONFIG="training/config/fsdp_config.json"
+DELIMITER="TextTextText"
 
-SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none"
+SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none-newdata-last"
 
 BATCH_SIZE=4
 EPOCH=1

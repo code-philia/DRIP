@@ -25,6 +25,58 @@ from gcg.log import setup_logger
 from gcg.utils import Message, Role, SuffixManager, get_nonascii_toks
 from gcg.eval_input import LengthMismatchError
 import numpy as np
+os.environ['TRANSFORMERS_CACHE'] = "/mnt/sda/hf_cache"
+
+@dataclasses.dataclass
+class CustomConversation(fastchat.conversation.Conversation):
+    def get_prompt(self) -> str:
+        system_prompt = self.system_template.format(system_message=self.system_message)
+        seps = [self.sep, self.sep2]
+        ret = system_prompt + self.sep
+        for i, (role, message) in enumerate(self.messages):
+            if message:
+                ret += role + "\n" + message + seps[i % 2]
+            else:
+                ret += role + "\n"
+        return ret
+
+    def copy(self):
+        return CustomConversation(
+            name=self.name,
+            system_template=self.system_template,
+            system_message=self.system_message,
+            roles=self.roles,
+            messages=[[x, y] for x, y in self.messages],
+            offset=self.offset,
+            sep_style=self.sep_style,
+            sep=self.sep,
+            sep2=self.sep2,
+            stop_str=self.stop_str,
+            stop_token_ids=self.stop_token_ids,
+        )
+
+
+def gcg(d_item, attack, cfg, data_delm):
+    cfg.sample_id = d_item["id"]
+    attack._setup_log_file(cfg)
+    prompt_no_sys = (
+        f"{d_item['instruction']}\n\n{data_delm}\n{d_item['input']}"
+        f" {TEST_INJECTED_PROMPT.capitalize()}"
+    )
+    try:
+        adv_suffix = attack.run(
+            messages=[
+                Message(Role.SYSTEM, ""),
+                Message(Role.USER, prompt_no_sys)
+            ],
+            target=TEST_INJECTED_WORD.lower()
+        ).best_suffix
+    except LengthMismatchError:
+        adv_suffix = cfg.adv_suffix_init
+    d_item["input"] += ' ' + TEST_INJECTED_PROMPT.capitalize() + ' ' + adv_suffix
+    torch.cuda.empty_cache()
+    return d_item
+
 
 def setup_gcg_configs(args):
     cfg = config_dict.ConfigDict()
@@ -56,33 +108,6 @@ def setup_gcg_configs(args):
     cfg.num_labels = 3
     return cfg
 
-@dataclasses.dataclass
-class CustomConversation(fastchat.conversation.Conversation):
-    def get_prompt(self) -> str:
-        system_prompt = self.system_template.format(system_message=self.system_message)
-        seps = [self.sep, self.sep2]
-        ret = system_prompt + self.sep
-        for i, (role, message) in enumerate(self.messages):
-            if message:
-                ret += role + "\n" + message + seps[i % 2]
-            else:
-                ret += role + "\n"
-        return ret
-
-    def copy(self):
-        return CustomConversation(
-            name=self.name,
-            system_template=self.system_template,
-            system_message=self.system_message,
-            roles=self.roles,
-            messages=[[x, y] for x, y in self.messages],
-            offset=self.offset,
-            sep_style=self.sep_style,
-            sep=self.sep,
-            sep2=self.sep2,
-            stop_str=self.stop_str,
-            stop_token_ids=self.stop_token_ids,
-        )
 
 def eval_func(adv_suffix, messages):
     inst, data = messages[1].content.split(f'\n\n{data_delm}\n')
@@ -97,27 +122,6 @@ def eval_func(adv_suffix, messages):
         frontend_delimiters,
         pass_expert_labels=args.pass_expert_labels
     )
-
-def gcg(d_item, attack, cfg, data_delm):
-    cfg.sample_id = d_item["id"]
-    attack._setup_log_file(cfg)
-    prompt_no_sys = (
-        f"{d_item['instruction']}\n\n{data_delm}\n{d_item['input']}"
-        f" {TEST_INJECTED_PROMPT.capitalize()}"
-    )
-    try:
-        adv_suffix = attack.run(
-            messages=[
-                Message(Role.SYSTEM, ""),
-                Message(Role.USER, prompt_no_sys)
-            ],
-            target=TEST_INJECTED_WORD.lower()
-        ).best_suffix
-    except LengthMismatchError:
-        adv_suffix = cfg.adv_suffix_init
-    d_item["input"] += ' ' + TEST_INJECTED_PROMPT.capitalize() + ' ' + adv_suffix
-    torch.cuda.empty_cache()
-    return d_item
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='Testing a model with a specific attack')
@@ -171,13 +175,12 @@ if __name__ == "__main__":
                 sep2="</s>",
             )
         )
-
         suffix_manager = SuffixManager(
             tokenizer=tokenizer,
             use_system_instructions=False,
             conv_template=fastchat.conversation.get_conv_template("struq"),
         )
-    else:
+    elif "llama" in model_path:
         fastchat.conversation.register_conv_template(
             CustomConversation(
                 name="llama3",
@@ -187,11 +190,40 @@ if __name__ == "__main__":
                 sep2="<|eot_id|>",
             )
         )
-
         suffix_manager = SuffixManager(
             tokenizer=tokenizer,
             use_system_instructions=False,
             conv_template=fastchat.conversation.get_conv_template("llama3"),
+        )
+    elif "mistral" in model_path:
+        fastchat.conversation.register_conv_template(
+            CustomConversation(
+                name="mistral03",
+                system_message="",
+                roles=(inst_delm, resp_delm),
+                sep="\n\n",
+                sep2="</s>",
+            )
+        )
+        suffix_manager = SuffixManager(
+            tokenizer=tokenizer,
+            use_system_instructions=False,
+            conv_template=fastchat.conversation.get_conv_template("mistral03"),
+        )
+    elif "qwen" in model_path:
+        fastchat.conversation.register_conv_template(
+            CustomConversation(
+                name="qwen2",
+                system_message="",
+                roles=(inst_delm, resp_delm),
+                sep="\n\n",
+                sep2="<|endoftext|>",
+            )
+        )
+        suffix_manager = SuffixManager(
+            tokenizer=tokenizer,
+            use_system_instructions=False,
+            conv_template=fastchat.conversation.get_conv_template("qwen2"),
         )
 
     cfg = setup_gcg_configs(args)

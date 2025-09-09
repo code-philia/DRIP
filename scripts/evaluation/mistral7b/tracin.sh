@@ -1,19 +1,5 @@
 #!/bin/bash
 
-set -euo pipefail
-IFS=$'\n\t'
-
-# === Prompt for CUDA device ===
-read -p "Enter CUDA device ID to use (default: 0): " CUDA_ID
-CUDA_ID=${CUDA_ID:-0}  # Default to 0 if empty
-
-if ! [[ "$CUDA_ID" =~ ^[0-9]+$ ]]; then
-    echo "[ERROR] Invalid CUDA device ID: $CUDA_ID"
-    exit 1
-fi
-echo "Using CUDA device $CUDA_ID"
-
-# === Prompt for model_name_or_path ===
 read -p "Enter model_name_or_path: " MODEL_PATH
 
 if [ -z "$MODEL_PATH" ]; then
@@ -44,9 +30,7 @@ else
 fi
 
 echo "Executing test..."
-CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.ifeval.test_ifeval \
---model_name_or_path $MODEL_PATH \
-$EXTRA_FLAGS"
+CMD="torchrun --nproc_per_node=6 -m testing.tracin --model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
 
 echo
 echo "⚙ Running:"

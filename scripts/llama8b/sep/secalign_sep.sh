@@ -6,13 +6,12 @@ BASE_MODEL="meta-llama/Meta-Llama-3-8B-Instruct"
 DATA_PATH="datasets/sep/sep_data_dpo.json"
 FILENAME=$(basename "$DATA_PATH")
 PREFIX=${FILENAME%%_*}
-FSDP_CONFIG="training/config/fsdp_config.json"
 DELIMITER="SpclSpclSpcl"
 
 SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}-${PREFIX}-none"
 
 BATCH_SIZE=4
-EPOCH=1
+EPOCH=3
 
 http_proxy=127.0.0.1:7890 https_proxy=127.0.0.1:7890 \
 python -m torch.distributed.run --nproc_per_node=6 --master_port=29951 "$SCRIPT_PATH" \
@@ -34,5 +33,4 @@ python -m torch.distributed.run --nproc_per_node=6 --master_port=29951 "$SCRIPT_
   --attack "${DELIMITER}_None" \
   --model_max_length 512 \
   --dataloader_num_workers 4 \
-  --fsdp "full_shard auto_wrap" \
-  --fsdp_config "$FSDP_CONFIG"
+  --fsdp "full_shard auto_wrap"

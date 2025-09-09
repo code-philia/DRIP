@@ -5,7 +5,7 @@ from modeling.qwen_instfuse import Qwen2ForCausalLMFuse, Qwen2FuseConfig
 import os
 from data_generation.struq import jload, make_supervised_data_module
 from peft import LoraConfig, get_peft_model
-from train_instfuse_lora import InstFuseTrainer
+from train_instfuse_lora import InstFuseTrainer, get_last_layer_modules
 
 logger = logging.get_logger(__name__)
 os.environ["WANDB_WATCH"]="all" # log all parameters gradients
@@ -37,14 +37,15 @@ def train():
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
+
     lora_config = LoraConfig(
         r=16,
         lora_alpha=8,
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],
-        modules_to_save=["lm_head", "embed_tokens", "deinstruction_shift"],
+        target_modules="all-linear",
+        modules_to_save=["lm_head", "deinstruction_shift"],
     )
     # Create the PEFT model
     peft_model = get_peft_model(model, lora_config)

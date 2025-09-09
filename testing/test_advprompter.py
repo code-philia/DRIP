@@ -19,6 +19,7 @@ from copy import deepcopy
 from tqdm import tqdm
 import csv
 import sys
+os.environ['TRANSFORMERS_CACHE'] = "/mnt/sda/hf_cache"
 
 
 if __name__ == "__main__":

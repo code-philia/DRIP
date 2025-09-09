@@ -43,6 +43,7 @@ if __name__ == "__main__":
 
     model_path = args.model_name_or_path
     log_path = f"{model_path}-log" if not os.path.exists(model_path) else model_path
+    os.makedirs(log_path, exist_ok=True)
     benign_response_name = os.path.join(log_path, f"predictions_on_sep.jsonl")
 
     # Load previous results if available

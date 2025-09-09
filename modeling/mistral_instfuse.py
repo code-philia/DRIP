@@ -32,6 +32,7 @@ class MistralModel(transformers.MistralModel):
         self.instruct_label = 0
         self.data_label = 1
         self.residual_weight = nn.Parameter(torch.tensor([-1.0986]))  # 0.5 weight assigned to the last instruction token
+        self.shift_tap = torch.nn.Identity()  # <— dummy tap point
         self.post_init()
 
     def forward(
@@ -80,6 +81,7 @@ class MistralModel(transformers.MistralModel):
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             # one-bit flip for First attention's input
             if self.config.bit_flip and layer_idx == 0:
+            # if self.config.bit_flip and layer_idx == self.config.num_hidden_layers-1:
                 inst_mask_2d = (expert_labels == self.data_label)  # B, L
                 inst_mask_3d = inst_mask_2d.unsqueeze(-1).expand_as(hidden_states)
                 shifts = self.deinstruction_shift(hidden_states) # why having different shifts for different samples?
@@ -88,6 +90,7 @@ class MistralModel(transformers.MistralModel):
                     shifts + hidden_states,
                     hidden_states
                 )
+                hidden_states = self.shift_tap(hidden_states)
 
             hidden_states = decoder_layer(
                 hidden_states,
@@ -120,6 +123,7 @@ class MistralForCausalLMFuse(transformers.MistralForCausalLM):
         self.residual_weight = nn.Parameter(torch.tensor([0.01])) # 0.5 weight assigned to the last instruction token
         self.response_label  = 2
         self.instruct_label  = 0
+        self.final_tap = torch.nn.Identity()  # <— dummy tap point
         self.post_init()
 
     def forward(
@@ -151,6 +155,7 @@ class MistralForCausalLMFuse(transformers.MistralForCausalLM):
         )
 
         hidden_states = outputs.last_hidden_state
+        hidden_states = self.final_tap(hidden_states)
         if expert_labels is not None:
             batch_size, length, hidden_size = hidden_states.shape
             is_generation = (length == 1) and (past_inst_hidden_states is not None) # is it in newly-generated-token phase?
