@@ -1,26 +1,29 @@
 import transformers
 from train import ModelArguments, DataArguments, TrainingArguments, AttackArguments
 from transformers.utils import logging
-from modeling.qwen_instfuse import Qwen2ForCausalLMFuse, Qwen2FuseConfig
+from modeling import MistralForCausalLMFuse, MistralFuseConfig
+from peft import LoraConfig, get_peft_model
 import os
 from data_generation.struq import jload, make_supervised_data_module
-from peft import LoraConfig, get_peft_model
 from train_instfuse_lora import InstFuseTrainer, get_last_layer_modules
-
 logger = logging.get_logger(__name__)
+
 os.environ["WANDB_WATCH"]="all" # log all parameters gradients
 
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments, AttackArguments))
     model_args, data_args, training_args, attack_args = parser.parse_args_into_dataclasses()
-    data_args.attack = attack_args.attack
+    data_args.attack = attack_args.attack 
     print('\n\n' + training_args.output_dir + '\n\n')
 
-    config = Qwen2FuseConfig.from_pretrained(
+    config = MistralFuseConfig.from_pretrained(
         model_args.model_name_or_path,
     )
 
-    model = Qwen2ForCausalLMFuse.from_pretrained(
+    config.residual = True
+    config.bit_flip = True
+
+    model = MistralForCausalLMFuse.from_pretrained(
         model_args.model_name_or_path,
         ignore_mismatched_sizes=True,
         config=config,
@@ -34,7 +37,7 @@ def train():
         use_fast=True,
         batched=True
     )
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token    = tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
 
@@ -52,7 +55,6 @@ def train():
 
     # Construct dataloader
     frontend_delimiters = data_args.attack.split("_")[0]
-    print(frontend_delimiters)
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args,
                                               downsample=training_args.downsample,
@@ -71,7 +73,10 @@ def train():
 
     # Save the LoRA-adapted model
     trainer.model.save_pretrained(training_args.output_dir)
+
+    # Merge and unload LoRA
     tokenizer.save_pretrained(training_args.output_dir)
+
     config = trainer.model.config  # Access the config of the model
     config.save_pretrained(training_args.output_dir)
 
