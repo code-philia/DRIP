@@ -13,10 +13,12 @@ from config import PROMPT_FORMAT, IGNORE_ATTACK_SENTENCES, OTHER_DELM_FOR_TEST, 
     IGNORE_INDEX, DELIMITERS, SPECIAL_DELM_TOKENS, TEXTUAL_DELM_TOKENS
 import torch
 import transformers
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence, Union, Any
 import difflib
 from dataclasses import dataclass, field
 from typing import List
+from transformers import PreTrainedTokenizerBase
+from datasets import Dataset as HFDataset
 
 def jload(f, mode="r"):
     if not isinstance(f, io.IOBase):
@@ -324,6 +326,7 @@ class SupervisedDataset(Dataset):
                     labels=self.labels[i])
 
 
+
 @dataclass
 class DataCollatorForSupervisedDatasetOrig(object):
     """Collate examples for supervised fine-tuning."""
@@ -353,7 +356,8 @@ class DataCollatorForSupervisedDataset(object):
     tokenizer: transformers.PreTrainedTokenizer
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, expert_labels, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "expert_labels", "labels"))
+        input_ids, expert_labels, labels = tuple([instance[key] for instance in instances]
+                                                 for key in ("input_ids", "expert_labels", "labels"))
 
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
@@ -372,6 +376,9 @@ class DataCollatorForSupervisedDataset(object):
             labels=labels,
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
+
+
+
 
 def get_embedding_indices(tokenizer):
     init_values = [tokenizer.encode(v, add_special_tokens=False)[0]

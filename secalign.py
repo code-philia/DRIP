@@ -62,7 +62,7 @@ def align():
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "v_proj"],
+        target_modules="all-linear",  # Targets all linear layer
         modules_to_save=["lm_head", "embed_tokens"],
     )
 
@@ -81,9 +81,7 @@ def align():
     trainer.train()
     # Save the LoRA-adapted model
     trainer.model.save_pretrained(training_args.output_dir)
-
     tokenizer.save_pretrained(training_args.output_dir)
-
     config = trainer.model.config  # Access the config of the model
     config.save_pretrained(training_args.output_dir)
 
