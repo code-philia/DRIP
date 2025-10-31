@@ -1,14 +1,17 @@
 # Introduction
 
 ## Motivation: 
+
 LLMs are vulnerable to prompt injection, and existing defenses often remove all instruction-like data. While robust, this approach loses information when such content is indeed part of the data. 
 We thus argue for **de-instructing**: suppressing directive intent without discarding information.
 ![Motivating example.](figures/motivating.png)
 
 ## Contributions
+
 DRIP introduces two architectural modifications: 
-(1) a **token-wise de-instruction shift**, which adjusts the representation of data tokens away from directive semantics, and 
-(2) a **residual re-instruction fusion** path, which persistently anchors the model's generation on the top-level instruction. 
+- A **token-wise de-instruction shift**, which adjusts the representation of data tokens away from directive semantics, and 
+- A **residual re-instruction fusion** path, which persistently anchors the model's generation on the top-level instruction. 
+
 ![Overview.](figures/overview.png)
 ---
 
