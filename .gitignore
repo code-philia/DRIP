@@ -1,7 +1,6 @@
 __pycache__
 wandb
 /datasets
-advprompter/exp
 core.*
 huggyllama
 mistralai
