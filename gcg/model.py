@@ -64,6 +64,7 @@ class TransformersModel:
         system_message: str | None = None,
         dtype: str = "float32",
         pass_expert_labels: bool = False,
+        add_attention_loss: bool = False,
         delm_ids: Tuple[TokenIds | None, TokenIds | None, TokenIds | None] = (None, None, None),
         num_labels: int = 3
     ):
@@ -130,6 +131,11 @@ class TransformersModel:
         self.num_fixed_tokens: int = 0
         self.default_eval_input: EvalInput | None = None
         self.pass_expert_labels = pass_expert_labels
+        self.add_attention_loss = add_attention_loss
+        # L_total = L_target + attention_loss_weight * L_attention
+        self.attention_loss_weight = 100 # attention scores are small
+        self._current_optim_slice = None
+
         self.model.eval()
 
         self.delm_ids = delm_ids
@@ -182,8 +188,11 @@ class TransformersModel:
 
     def set_prefix_cache(self, messages: list[Message]) -> None:
         prefix_cache, num_fixed_tokens = get_prefix_cache(
-            self.suffix_manager, self.model, self.tokenizer, messages,
-            self.pass_expert_labels, self.delm_ids[0], self.delm_ids[1], self.delm_ids[2],
+            self.suffix_manager,
+            self.model, self.tokenizer,
+            messages,
+            self.pass_expert_labels,
+            self.delm_ids[0], self.delm_ids[1], self.delm_ids[2],
             self.num_labels
         )
         if isinstance(prefix_cache, Tuple) and len(prefix_cache) == 2:
@@ -244,6 +253,7 @@ class TransformersModel:
         filter_cond &= is_kept
         return filter_cond
 
+    @torch.no_grad()
     def compute_suffix_loss(
         self,
         eval_input: EvalInput,
@@ -252,18 +262,19 @@ class TransformersModel:
         max_target_len: int | None = None,
         **kwargs,
     ) -> LossOutput:
-        """Compute loss given multiple suffixes."""
-        # 从 kwargs 读取开关：默认 True（保持原行为）
         return_logits = bool(kwargs.pop("return_logits", True))
 
-        suffix_ids = eval_input.suffix_ids
+        suffix_ids        = eval_input.suffix_ids
         dynamic_input_ids = eval_input.dynamic_input_ids
-        targets = eval_input.target_ids
+        targets     = eval_input.target_ids
         optim_slice = eval_input.optim_slice
-        loss_slice = eval_input.loss_slice
+        loss_slice  = eval_input.loss_slice
         orig_device = suffix_ids.device
         expert_labels = eval_input.expert_labels
         device = self.device
+
+        # Record the currect suffix position，for later computing the attention loss
+        self._current_optim_slice = optim_slice
 
         if max_target_len is not None:
             loss_slice = slice(
@@ -277,7 +288,6 @@ class TransformersModel:
             dynamic_input_ids = dynamic_input_ids[: loss_slice.stop + 1]
             expert_labels     = expert_labels[: loss_slice.stop + 1]
 
-        # ---- batching (固定 batch_size；最后一批用填充) ----
         num_samples = len(suffix_ids)
         if batch_size is None:
             batch_size = num_samples
@@ -285,7 +295,6 @@ class TransformersModel:
             batch_size = min(batch_size, num_samples)
         num_batches = int(np.ceil(num_samples / batch_size))
 
-        # 准备输入模板
         dynamic_input_ids       = dynamic_input_ids.to(device)
         batch_dynamic_input_ids = dynamic_input_ids.repeat(batch_size, 1)
         expert_labels       = expert_labels.to(device)
@@ -320,11 +329,10 @@ class TransformersModel:
             )
             loss_list.append(loss)
             logits_list.append(logits)
-            # 及时释放临时引用
             gc.collect()
             torch.cuda.empty_cache()
 
-        loss = torch.cat(loss_list, dim=0).to(orig_device, non_blocking=True)
+        loss   = torch.cat(loss_list, dim=0).to(orig_device, non_blocking=True)
         logits = torch.cat(logits_list, dim=0).to(orig_device, non_blocking=True)
 
         assert loss.shape == (num_samples,), loss.shape
@@ -334,7 +342,58 @@ class TransformersModel:
             len(self.tokenizer),
         )
         assert logits.shape == logits_shape, logits.shape
-        return LossOutput(losses=loss, logits=logits, num_queries=num_samples)
+        return LossOutput(
+            losses=loss,
+            logits=logits,
+            num_queries=num_samples
+        )
+
+    def _compute_attention_loss_from_attns(
+        self,
+        last_layer_attn: torch.Tensor,
+        loss_slice: slice | torch.Tensor,
+        optim_slice: slice | torch.Tensor | None,
+        seq_len: int,
+    ) -> torch.Tensor:
+        B, H, T, S = last_layer_attn.shape # (batch, num_heads, seq_len, src_len)
+        assert T == seq_len, f"Expected seq_len={seq_len}, got {T}"
+        device = last_layer_attn.device
+        attn   = last_layer_attn.mean(dim=1) # average over heads, (batch, seq_len, src_len)
+
+        if isinstance(loss_slice, slice):
+            out_idx = torch.arange(seq_len, device=device)[loss_slice]
+        elif isinstance(loss_slice, torch.Tensor) and loss_slice.dim() == 1:
+            out_idx = loss_slice.to(device)
+        else:
+            out_idx = torch.arange(seq_len, device=device) # dummy
+
+        # taking the output tokens (newly generated) as the query
+        attn_out = attn[:, out_idx, :]
+        token_scores = attn_out.mean(dim=1) # (batch, src_len)
+
+        prefix_len = S - seq_len
+        if prefix_len < 0:
+            prefix_len = 0
+
+        # taking the suffix tokens as the key
+        if optim_slice is None:
+            suffix_idx_local = torch.arange(seq_len, device=device)
+        elif isinstance(optim_slice, slice):
+            suffix_idx_local = torch.arange(seq_len, device=device)[optim_slice]
+        elif isinstance(optim_slice, torch.Tensor) and optim_slice.dim() == 1:
+            suffix_idx_local = optim_slice.to(device)
+        else:
+            suffix_idx_local = torch.arange(seq_len, device=device)
+
+        suffix_idx_global = prefix_len + suffix_idx_local # kick out the indices before the suffix tokens
+        suffix_idx_global = suffix_idx_global.clamp(0, S - 1)
+
+        suffix_scores = token_scores[:, suffix_idx_global]
+        s_adv = suffix_scores.mean(dim=1)
+
+        # want to increase the attention scores assigned to the suffix tokens
+        attn_loss = -s_adv
+        return attn_loss
 
     def _compute_loss(
         self,
@@ -348,34 +407,39 @@ class TransformersModel:
 
         num_samples = num_samples or len(batch_input_ids)
         input_embeds = self.embed_layer(batch_input_ids)
+        need_attn = self.add_attention_loss
 
         if self.pass_expert_labels:
             if self.prefix_cache_inst_states is not None:
-                logits = self.model(
+                outputs = self.model(
                     inputs_embeds=input_embeds,
                     expert_labels=batch_expert_labels,
                     past_key_values=self._get_batch_prefix_cache(len(batch_input_ids)),
                     past_inst_hidden_states=self.prefix_cache_inst_states,
                     use_cache=True,
-                ).logits[:num_samples]
+                    output_attentions=need_attn,
+                )
             else:
-                logits = self.model(
+                outputs = self.model(
                     inputs_embeds=input_embeds,
                     expert_labels=batch_expert_labels,
                     past_key_values=self._get_batch_prefix_cache(len(batch_input_ids)),
                     use_cache=True,
-                ).logits[:num_samples]
+                    output_attentions=need_attn,
+                )
         else:
-            logits = self.model(
+            outputs = self.model(
                 inputs_embeds=input_embeds,
                 past_key_values=self._get_batch_prefix_cache(len(batch_input_ids)),
                 use_cache=True,
-            ).logits[:num_samples]
+                output_attentions=need_attn,
+            )
 
+        logits     = outputs.logits[:num_samples]
+        attentions = outputs.attentions if need_attn and hasattr(outputs, "attentions") else None
         gc.collect()
         torch.cuda.empty_cache()
 
-        # 不再 empty_cache()，避免碎片化
         logits = logits / temperature
 
         if isinstance(loss_slice, slice):
@@ -396,6 +460,22 @@ class TransformersModel:
                 reduction="none",
             )
             loss = loss.sum(dim=-1).mean(dim=1)
+
+        if self.add_attention_loss and attentions is not None:
+            last_layer_attn = attentions[-1][:num_samples]
+            seq_len     = logits.shape[1]
+            optim_slice = getattr(self, "_current_optim_slice", None)
+
+            attn_loss = self._compute_attention_loss_from_attns(
+                last_layer_attn=last_layer_attn,
+                loss_slice=loss_slice,
+                optim_slice=optim_slice,
+                seq_len=seq_len,
+            )
+            del attentions
+            # L_total = L_target + w_a * L_attention
+            loss = loss + self.attention_loss_weight * attn_loss
+
         return loss_logits, loss, logits, loss_slice
 
     @torch.no_grad()
@@ -424,34 +504,58 @@ class TransformersModel:
         input_embeds.requires_grad_(True)
         expert_labels.unsqueeze_(0)
 
+        need_attn = self.add_attention_loss
+
         with torch.enable_grad():
             # Forward pass
             if self.pass_expert_labels:
                 if self.prefix_cache_inst_states is not None:
-                    logits = self.model(
+                    outputs = self.model(
                         inputs_embeds=input_embeds,
                         expert_labels=expert_labels,
                         past_key_values=self._get_batch_prefix_cache(len(input_embeds)),
                         past_inst_hidden_states=self.prefix_cache_inst_states,
                         use_cache=True,
-                    ).logits
+                        output_attentions=need_attn,
+                    )
                 else:
-                    logits = self.model(
+                    outputs = self.model(
                         inputs_embeds=input_embeds,
                         expert_labels=expert_labels,
                         past_key_values=self._get_batch_prefix_cache(len(input_embeds)),
                         use_cache=True,
-                    ).logits
+                        output_attentions=need_attn,
+                    )
             else:
-                logits = self.model(
+                outputs = self.model(
                     inputs_embeds=input_embeds,
                     past_key_values=self._get_batch_prefix_cache(len(input_embeds)),
                     use_cache=True,
-                ).logits
+                    output_attentions=need_attn,
+                )
+
+            logits     = outputs.logits
+            attentions = outputs.attentions if need_attn and hasattr(outputs, "attentions") else None
 
             # Compute loss and gradients
             loss_logits = logits[:, loss_slice].squeeze(0)
-            loss = F.cross_entropy(loss_logits / temperature, target_ids)
+            ce_loss     = F.cross_entropy(loss_logits / temperature, target_ids)
+
+            if self.add_attention_loss and attentions is not None:
+                last_layer_attn = attentions[-1]  # (1, H, T, S)
+                seq_len         = logits.shape[1]
+                attn_loss_vec = self._compute_attention_loss_from_attns(
+                    last_layer_attn=last_layer_attn,
+                    loss_slice=loss_slice,
+                    optim_slice=optim_slice,
+                    seq_len=seq_len,
+                )
+                del attentions
+                attn_loss = attn_loss_vec.mean()
+                loss = ce_loss + self.attention_loss_weight * attn_loss
+            else:
+                loss = ce_loss
+
             embed_grads = torch.autograd.grad(outputs=[loss], inputs=[input_embeds])[0]
             gc.collect()
             torch.cuda.empty_cache()

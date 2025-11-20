@@ -24,6 +24,7 @@ class LlamaMoEConfig(LlamaConfig):
         self.num_blocks_with_shifts = kwargs.get('num_blocks_with_shifts', 1)
         self.num_experts = kwargs.get('num_experts', 3)
         self.d_gap = kwargs.get('d_gap', 512)
+        self.bit_flip = kwargs.get('bit_flip', True)
         assert self.num_experts > 0, "num_experts must be > 0"
 
 class LlamaModel(transformers.LlamaModel):
@@ -35,6 +36,7 @@ class LlamaModel(transformers.LlamaModel):
         self.apply_intermediate_shifts = config.apply_intermediate_shifts
         self.num_blocks_with_shifts = config.num_blocks_with_shifts
         self.intermediate_shifts = nn.Embedding(config.num_experts, config.hidden_size)
+        self.shift_tap = torch.nn.Identity()  # <— dummy tap point
 
         self.post_init()
         self.custom_initialize()
@@ -86,9 +88,10 @@ class LlamaModel(transformers.LlamaModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        if self.apply_input_shifts:
+        if self.config.bit_flip and self.apply_input_shifts:
             shifts = self.input_shifts(expert_labels)  # (batch_size, seq_len, hidden_size)
             hidden_states = hidden_states + shifts
+        hidden_states = self.shift_tap(hidden_states)
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
 
@@ -122,6 +125,7 @@ class LlamaForCausalLMMoE(transformers.LlamaForCausalLM):
         del self.model
         self.model = LlamaModel(config)
         self.vocab_size = config.vocab_size
+        self.final_tap = torch.nn.Identity()  # <— dummy tap point
         self.post_init()
 
     def forward(
@@ -152,6 +156,8 @@ class LlamaForCausalLMMoE(transformers.LlamaForCausalLM):
         )
 
         hidden_states = outputs.last_hidden_state
+        hidden_states = self.final_tap(hidden_states)
+
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
 

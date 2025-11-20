@@ -3,9 +3,7 @@ import collections
 import dataclasses
 import json
 from typing import Dict, Optional, Sequence, Union
-
 from testing.ifeval import instructions_registry
-
 
 @dataclasses.dataclass
 class InputExample:

@@ -179,6 +179,7 @@ class LlamaForCausalLMMoE(transformers.LlamaForCausalLM):
         del self.model
         self.model = LlamaModel(config)
         self.vocab_size = config.vocab_size
+        self.final_tap = torch.nn.Identity()  # <— dummy tap point
         self.post_init()
 
     def forward(
@@ -482,4 +483,5 @@ class LlamaForCausalLMMoEV2(LlamaForCausalLMMoE):
         del self.model
         self.model = LlamaModelV2(config)
         self.vocab_size = config.vocab_size
+        self.final_tap = torch.nn.Identity()  # <— dummy tap point
         self.post_init()

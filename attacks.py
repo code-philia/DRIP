@@ -211,3 +211,10 @@ def hackaprompt(prompt_format):
 def random_marker(n=6): return "§" + "".join(random.choice(string.ascii_letters+string.digits) for _ in range(n)) + "§"
 def datamark_text(t, m): return re.sub(r'(\S+)', lambda x: x.group(1)+m, t) if t else t
 def b64(t): return base64.b64encode(t.encode("utf-8")).decode("ascii") if t else t
+
+def neuralexec(d_item, prefix, suffix):
+    trigger = '{prefix} {injected_prompt}  {suffix}'
+    d_item['input'] += ' ' + trigger.format(injected_prompt=np.random.choice(IGNORE_ATTACK_SENTENCES['test']).format(injected_prompt=TEST_INJECTED_PROMPT),
+                                            prefix=prefix,
+                                            suffix=suffix)
+    return d_item

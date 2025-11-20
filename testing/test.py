@@ -105,11 +105,12 @@ def load_model_and_tokenizer(
 
 def load_delimiters(model_name: str, path: str) -> str:
     if model_name in DELIMITERS: return model_name
-    for s,k in [("SpclSpclSpcl","SpclSpclSpcl"),
-                ("TextTextTextMistral","TextTextTextMistral"),
-                ("TextTextTextQwen","TextTextTextQwen"),
-                ("TextTextText","TextTextText")
-                ]:
+    for s,k in [
+        ("SpclSpclSpcl","SpclSpclSpcl"),
+        ("TextTextTextMistral","TextTextTextMistral"),
+        ("TextTextTextQwen","TextTextTextQwen"),
+        ("TextTextText","TextTextText")
+    ]:
         if s in path:
             return k
     raise NotImplementedError
@@ -122,7 +123,8 @@ def load_full_model(model_path: str, customized_model_class: Optional[str], load
     name = os.path.basename(model_path)
     delims = load_delimiters(name, model_path)
     training_attacks = "NaiveCompletion"
-    if not load_model: return model_path, delims
+    if not load_model:
+        return model_path, delims
     model, tok = load_model_and_tokenizer(base, model_path, customized_model_class, device_map=device_map)
     if hasattr(model, "generation_config"): model.generation_config.pad_token_id = tok.pad_token_id
     return model, tok, delims, training_attacks
