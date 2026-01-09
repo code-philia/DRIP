@@ -195,6 +195,7 @@ def setup_gcg_configs(args):
     cfg.delm_ids = (args.inst_seperator, args.data_seperator, args.response_seperator)
     cfg.num_labels = 3
     cfg.add_attention_loss = (args.attack == "attngcg")
+    cfg.add_bypass_loss = (args.attack == "bypass")
     return cfg
 
 @torch.inference_mode()
@@ -260,7 +261,7 @@ def eval_func(adv_suffix, messages):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='Testing a model with a specific attack')
     parser.add_argument('-m', '--model_name_or_path', type=str, nargs="+")
-    parser.add_argument('-a', '--attack', type=str, default='gcg', choices=["gcg", "attngcg"])
+    parser.add_argument('-a', '--attack', type=str, default='gcg', choices=["gcg", "attngcg", "bypass"])
     parser.add_argument('-d', '--defense', type=str, default='none',
                         choices=['none', 'sandwich', 'instructional', 'reminder', 'isolation', 'incontext'],
                         help='Baseline test-time zero-shot prompting defense')

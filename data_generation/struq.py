@@ -380,7 +380,6 @@ class DataCollatorForSupervisedDataset(object):
 
 
 
-
 def get_embedding_indices(tokenizer):
     init_values = [tokenizer.encode(v, add_special_tokens=False)[0]
                    for v in TEXTUAL_DELM_TOKENS] # get the delimiters tokens IDs

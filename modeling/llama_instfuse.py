@@ -255,9 +255,7 @@ class LlamaModelEmbeddingShift(transformers.LlamaModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            # one-bit flip for First attention's input
             if self.config.bit_flip and layer_idx == 0:
-            # if self.config.bit_flip and layer_idx == self.config.num_hidden_layers-1:
                 inst_mask_2d = (expert_labels == self.data_label)  # (B, L)
                 inst_mask_3d = inst_mask_2d.unsqueeze(-1).expand_as(hidden_states)  # (B, L, H)
                 shifts = self.deinstruction_shift(expert_labels)
@@ -295,7 +293,7 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
         self.vocab_size = config.vocab_size
         self.vocab_size      = config.vocab_size
         self.hidden_size     = config.hidden_size
-        self.residual_weight = nn.Parameter(torch.tensor([0.01])) # 0.5 weight assigned to the last instruction token
+        self.residual_weight = nn.Parameter(torch.tensor([0.0])) # 0.5 weight assigned to the last instruction token
         self.response_label  = 2
         self.instruct_label  = 0
         self.final_tap = torch.nn.Identity()  # <— dummy tap point
@@ -337,12 +335,18 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
             if (not is_generation) and (self.config.residual): # for newly generated token, do not add the instruction semantic
                 batch_idx = torch.arange(batch_size, device=hidden_states.device)  # (B,)
 
-                if past_inst_hidden_states is not None: # load cached last instruction hidden states
+                if past_inst_hidden_states is not None:
                     last_inst = past_inst_hidden_states.to(hidden_states.device)
                 else:
-                    last_inst_indices = _get_last_indices(self.instruct_label, expert_labels) # (B,)
-                    last_inst = hidden_states[batch_idx, last_inst_indices]  # (B, H)
-                    past_inst_hidden_states = last_inst.clone().detach().cpu()
+                    last_inst_indices = _get_last_indices(self.instruct_label, expert_labels)
+
+                    # Prevent having -1
+                    safe_indices = last_inst_indices.clamp(min=0)
+                    last_inst = hidden_states[batch_idx, safe_indices]
+                    invalid_mask = (last_inst_indices == -1).unsqueeze(-1)  # (B, 1)
+                    last_inst = last_inst.masked_fill(invalid_mask, 0.0)
+
+                    past_inst_hidden_states = last_inst.clone().detach()
 
                 end_indices = _get_last_indices(self.response_label, expert_labels) # (B,)
                 end_state   = hidden_states[batch_idx, end_indices]  # (B, H)
@@ -405,6 +409,9 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
         if expert_labels is not None:
             model_inputs["expert_labels"] = expert_labels
 
+        past_inst_hidden_states = kwargs.get("past_inst_hidden_states", None)
+        if past_inst_hidden_states is not None:
+            model_inputs["past_inst_hidden_states"] = past_inst_hidden_states
         return model_inputs
 
     def _update_model_kwargs_for_generation(
@@ -529,12 +536,18 @@ class LlamaForCausalLMConcatFuse(LlamaForCausalLMFuse):
             if (not is_generation) and (self.config.residual): # for newly generated token, do not add the instruction semantic
                 batch_idx = torch.arange(batch_size, device=hidden_states.device)  # (B,)
 
-                if past_inst_hidden_states is not None: # load cached last instruction hidden states
+                if past_inst_hidden_states is not None:
                     last_inst = past_inst_hidden_states.to(hidden_states.device)
                 else:
-                    last_inst_indices = _get_last_indices(self.instruct_label, expert_labels) # (B,)
-                    last_inst = hidden_states[batch_idx, last_inst_indices]  # (B, H)
-                    past_inst_hidden_states = last_inst.clone().detach().cpu()
+                    last_inst_indices = _get_last_indices(self.instruct_label, expert_labels)
+
+                    # Prevent having -1
+                    safe_indices = last_inst_indices.clamp(min=0)
+                    last_inst = hidden_states[batch_idx, safe_indices]
+                    invalid_mask = (last_inst_indices == -1).unsqueeze(-1)  # (B, 1)
+                    last_inst = last_inst.masked_fill(invalid_mask, 0.0)
+
+                    past_inst_hidden_states = last_inst.clone().detach()
 
                 start_resp_indices = _get_last_indices(self.response_label, expert_labels)
                 start_resp = hidden_states[batch_idx, start_resp_indices]

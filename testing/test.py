@@ -363,7 +363,12 @@ def test_parser():
                                  "completion_close_1hash", "completion_close_2hash", "completion_close_0hash", "completion_close_upper", "completion_close_title", "completion_close_nospace",
                                  "completion_close_nocolon", "completion_close_typo", "completion_close_similar",
                                  "completion_close_ownlower", "completion_close_owntitle", "completion_close_ownhash", "completion_close_owndouble",
-                                 "escape_deletion", "hackaprompt"],
+                                 "escape_deletion", "hackaprompt",
+                                 "inject_pos_0", "inject_pos_10", "inject_pos_20", "inject_pos_30", "inject_pos_40",
+                                 "inject_pos_50", "inject_pos_60", "inject_pos_70", "inject_pos_80", "inject_pos_90", "inject_pos_100",
+                                 "stress_repeat_2", "stress_repeat_4", "stress_repeat_6",
+                                 "stress_repeat_8", "stress_repeat_10", "stress_repeat_12",
+                                 "stress_repeat_14", "stress_repeat_16", "stress_repeat_18", "stress_repeat_20"],
                         nargs='+')
     parser.add_argument('-d', '--defense', type=str, default='none', # zero-shot defenses, never included in the adversarial training
                         choices=['none', 'sandwich', 'reminder', 'fakecompletion', 'thinkintervene',
