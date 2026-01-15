@@ -352,7 +352,7 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
         self.vocab_size = config.vocab_size
         self.vocab_size      = config.vocab_size
         self.hidden_size     = config.hidden_size
-        self.residual_weight = nn.Parameter(torch.tensor([0.01])) # 0.5 weight assigned to the last instruction token
+        self.residual_weight = nn.Parameter(torch.tensor([0.0])) # 0.5 weight assigned to the last instruction token
         self.response_label  = 2
         self.instruct_label  = 0
         self.final_tap = torch.nn.Identity()  # <— dummy tap point
@@ -409,8 +409,14 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
                     last_inst = past_inst_hidden_states.to(hidden_states.device)
                 else:
                     last_inst_indices = _get_last_indices(self.instruct_label, expert_labels) # (B,)
-                    last_inst = hidden_states[batch_idx, last_inst_indices]  # (B, H)
-                    past_inst_hidden_states = last_inst.clone().detach().cpu()
+
+                    # Prevent having -1
+                    safe_indices = last_inst_indices.clamp(min=0)
+                    last_inst = hidden_states[batch_idx, safe_indices]
+                    invalid_mask = (last_inst_indices == -1).unsqueeze(-1)  # (B, 1)
+                    last_inst = last_inst.masked_fill(invalid_mask, 0.0)
+
+                    past_inst_hidden_states = last_inst.clone().detach()
 
                 end_indices = _get_last_indices(self.response_label, expert_labels) # (B,)
                 end_state   = hidden_states[batch_idx, end_indices]  # (B, H)

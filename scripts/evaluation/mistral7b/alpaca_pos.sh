@@ -60,11 +60,18 @@ fi
 COMMON_ARGS="--model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
 
 # === Define Tasks (Functions inherit current Conda env) ===
-task0() { CUDA_VISIBLE_DEVICES=$DEV0 python -m testing.test $COMMON_ARGS --attack inject_pos_0 inject_pos_10 inject_pos_20 inject_pos_30; }
-task1() { CUDA_VISIBLE_DEVICES=$DEV1 python -m testing.test $COMMON_ARGS --attack inject_pos_40 inject_pos_50 inject_pos_60 inject_pos_70; }
-task2() { CUDA_VISIBLE_DEVICES=$DEV2 python -m testing.test $COMMON_ARGS --attack inject_pos_80 inject_pos_90 inject_pos_100; }
-task3() { CUDA_VISIBLE_DEVICES=$DEV3 python -m testing.test $COMMON_ARGS --attack stress_repeat_2 stress_repeat_4 stress_repeat_6; }
-task4() { CUDA_VISIBLE_DEVICES=$DEV4 python -m testing.test $COMMON_ARGS --attack stress_repeat_8 stress_repeat_10 stress_repeat_12; }
+#task0() { CUDA_VISIBLE_DEVICES=$DEV0 python -m testing.test $COMMON_ARGS --attack inject_pos_0 inject_pos_10 inject_pos_20 inject_pos_30; }
+#task1() { CUDA_VISIBLE_DEVICES=$DEV1 python -m testing.test $COMMON_ARGS --attack inject_pos_40 inject_pos_50 inject_pos_60 inject_pos_70; }
+#task2() { CUDA_VISIBLE_DEVICES=$DEV2 python -m testing.test $COMMON_ARGS --attack inject_pos_80 inject_pos_90 inject_pos_100; }
+#task3() { CUDA_VISIBLE_DEVICES=$DEV3 python -m testing.test $COMMON_ARGS --attack stress_repeat_2 stress_repeat_4 stress_repeat_6; }
+#task4() { CUDA_VISIBLE_DEVICES=$DEV4 python -m testing.test $COMMON_ARGS --attack stress_repeat_8 stress_repeat_10 stress_repeat_12; }
+#task5() { CUDA_VISIBLE_DEVICES=$DEV5 python -m testing.test $COMMON_ARGS --attack stress_repeat_14 stress_repeat_16 stress_repeat_18 stress_repeat_20; }
+
+task0() { CUDA_VISIBLE_DEVICES=$DEV0 python -m testing.test $COMMON_ARGS --attack inject_pos_10 inject_pos_20 inject_pos_30; }
+task1() { CUDA_VISIBLE_DEVICES=$DEV1 python -m testing.test $COMMON_ARGS --attack inject_pos_50 inject_pos_60 inject_pos_70; }
+task2() { CUDA_VISIBLE_DEVICES=$DEV2 python -m testing.test $COMMON_ARGS --attack inject_pos_90 inject_pos_100; }
+task3() { CUDA_VISIBLE_DEVICES=$DEV3 python -m testing.test $COMMON_ARGS --attack stress_repeat_4 stress_repeat_6; }
+task4() { CUDA_VISIBLE_DEVICES=$DEV4 python -m testing.test $COMMON_ARGS --attack stress_repeat_10 stress_repeat_12; }
 task5() { CUDA_VISIBLE_DEVICES=$DEV5 python -m testing.test $COMMON_ARGS --attack stress_repeat_14 stress_repeat_16 stress_repeat_18 stress_repeat_20; }
 
 echo

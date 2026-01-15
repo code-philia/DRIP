@@ -22,7 +22,7 @@ class WhiteBoxTokensOpt:
         hparams,
     ):
         self.llm_obj = llm_obj
-        self.llm = llm_obj.model
+        self.llm = llm_obj.llama_model
         self.tokenizer = llm_obj.tokenizer
         self.hparams = hparams
         self.delimiter = hparams["delimiter"]
@@ -32,7 +32,7 @@ class WhiteBoxTokensOpt:
         self.device = self.llm.device
         
         if self.llm:
-            self.emb_matrix = self.llm.model.get_input_embeddings().weight    
+            self.emb_matrix = self.llm.llama_model.get_input_embeddings().weight
         
             self.loss_fun = torch.nn.CrossEntropyLoss(reduction='none')
 
@@ -97,17 +97,17 @@ class WhiteBoxTokensOpt:
             ids = torch.tensor(ids, device=self.device, dtype=torch.long)
             L = ids.size(0)
 
-            start = max_length - L  # 让 target 对齐到序列末尾
-            labels[i, start:start + L] = ids  # 其余位置保持 -100
+            start = max_length - L  #
+            labels[i, start:start + L] = ids  #
 
         return labels
         
     def embed_tokens(self, prompts_tok):
-        return self.llm.model.embed_tokens(prompts_tok)
+        return self.llm.llama_model.embed_tokens(prompts_tok)
 
     def get_logits(self, prompt, attention_mask, expert_labels):
         input_type = prompt.dtype
-        if input_type == torch.int64: # fixme
+        if input_type == torch.int64:
             # input tokens:
             if self.pass_expert_labels:
                 return self.llm(input_ids=prompt,
@@ -273,7 +273,7 @@ class WhiteBoxTokensOpt:
             shift_labels.view(-1),
         ).view(B, -1)  # [B, L-1]
 
-        mask = (shift_labels != -100)  # 只在 label != -100 的位置算 loss
+        mask = (shift_labels != -100)  #
         denom = mask.sum(dim=1).clamp(min=1)
         loss_per_seq = (loss * mask).sum(dim=1) / denom
 

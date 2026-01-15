@@ -86,6 +86,10 @@ class BaseAttack:
             pass_expert_labels=config.pass_expert_labels,
             add_bypass_loss=config.add_bypass_loss,
             add_attention_loss=config.add_attention_loss,
+            attention_loss_lambda=config.attention_loss_lambda,
+            bypass_loss_lambda=config.bypass_loss_lambda,
+            add_cancellation_loss=config.add_cancellation_loss,
+            cancellation_loss_lambda=config.cancellation_loss_lambda,
             delm_ids=config.delm_ids,
             num_labels=config.num_labels
         )

@@ -65,7 +65,11 @@ class TransformersModel:
         dtype: str = "float32",
         pass_expert_labels: bool = False,
         add_bypass_loss: bool = False,
+        bypass_loss_lambda: float = 10.,
+        add_cancellation_loss: bool = False,
+        cancellation_loss_lambda: float = 10,
         add_attention_loss: bool = False,
+        attention_loss_lambda: float = 100.,
         delm_ids: Tuple[TokenIds | None, TokenIds | None, TokenIds | None] = (None, None, None),
         num_labels: int = 3
     ):
@@ -135,8 +139,11 @@ class TransformersModel:
         self.add_bypass_loss = add_bypass_loss
         self.add_attention_loss = add_attention_loss
         # L_total = L_target + attention_loss_weight * L_attention
-        self.bypass_loss_weight = 10 # L2 norm after representation editing projection is small
-        self.attention_loss_weight = 100 # attention scores are small
+        self.bypass_loss_weight = bypass_loss_lambda # L2 norm after representation editing projection is small
+        self.attention_loss_weight = attention_loss_lambda # attention scores are small
+        # cancellation loss
+        self.add_cancellation_loss = add_cancellation_loss
+        self.cancellation_loss_weight = cancellation_loss_lambda
         self._current_optim_slice = None
 
         self.model.eval()
@@ -449,7 +456,10 @@ class TransformersModel:
                     past_inst_hidden_states=self.prefix_cache_inst_states,
                     use_cache=True,
                     output_attentions=need_attn,
+                    output_hidden_states=True,
+
                 )
+
             else:
                 outputs = self.model(
                     inputs_embeds=input_embeds,
@@ -457,6 +467,8 @@ class TransformersModel:
                     past_key_values=self._get_batch_prefix_cache(len(batch_input_ids)),
                     use_cache=True,
                     output_attentions=need_attn,
+                    output_hidden_states=True,
+
                 )
         else:
             outputs = self.model(
@@ -464,6 +476,8 @@ class TransformersModel:
                 past_key_values=self._get_batch_prefix_cache(len(batch_input_ids)),
                 use_cache=True,
                 output_attentions=need_attn,
+                output_hidden_states=True,
+
             )
 
         logits     = outputs.logits[:num_samples]
@@ -517,6 +531,18 @@ class TransformersModel:
             # L_total = L_target + w_a * L_attention
             loss = loss + self.attention_loss_weight * attn_loss
 
+        if self.add_cancellation_loss and hasattr(outputs, "hidden_states"):
+            last_hidden = outputs.hidden_states[-1]
+            if self.prefix_cache_inst_states is not None:
+                h_instr = self.prefix_cache_inst_states.mean(0).detach()  # (batch, hidden)
+                optim_slice = getattr(self, "_current_optim_slice", None)
+                suffix_end = optim_slice.stop
+                h_out = last_hidden[:, suffix_end - 1, :]  # (batch, hidden)
+                cos_sim = F.cosine_similarity(h_out, h_instr, dim=-1).mean()
+                loss = loss + self.cancellation_loss_weight * cos_sim
+            else:
+                pass
+
         return loss_logits, loss, logits, loss_slice
 
     @torch.no_grad()
@@ -558,6 +584,7 @@ class TransformersModel:
                         past_inst_hidden_states=self.prefix_cache_inst_states,
                         use_cache=True,
                         output_attentions=need_attn,
+                        output_hidden_states=True,
                     )
                 else:
                     outputs = self.model(
@@ -566,6 +593,7 @@ class TransformersModel:
                         past_key_values=self._get_batch_prefix_cache(len(input_embeds)),
                         use_cache=True,
                         output_attentions=need_attn,
+                        output_hidden_states=True,
                     )
             else:
                 outputs = self.model(
@@ -573,6 +601,7 @@ class TransformersModel:
                     past_key_values=self._get_batch_prefix_cache(len(input_embeds)),
                     use_cache=True,
                     output_attentions=need_attn,
+                    output_hidden_states=True,
                 )
 
             logits     = outputs.logits
@@ -581,6 +610,7 @@ class TransformersModel:
             # Compute loss and gradients
             loss_logits = logits[:, loss_slice].squeeze(0)
             ce_loss     = F.cross_entropy(loss_logits / temperature, target_ids)
+            loss = ce_loss
 
             # === Add Bypass Loss ===
             if self.add_bypass_loss:
@@ -590,6 +620,7 @@ class TransformersModel:
                     projection_module=self.model.model.deinstruction_shift,
                 )
                 loss = ce_loss + self.bypass_loss_weight * bypass_loss
+
             if self.add_attention_loss and attentions is not None:
                 last_layer_attn = attentions[-1]  # (1, H, T, S)
                 seq_len         = logits.shape[1]
@@ -602,8 +633,19 @@ class TransformersModel:
                 del attentions
                 attn_loss = attn_loss_vec.mean()
                 loss = ce_loss + self.attention_loss_weight * attn_loss
-            else:
-                loss = ce_loss
+
+            # Cancellation Loss (Anti-Anchor)
+            # This drives h_out to be opposite to h_instr (-1).
+            if self.add_cancellation_loss and hasattr(outputs, "hidden_states"):
+                last_hidden = outputs.hidden_states[-1]
+                if self.prefix_cache_inst_states is not None:
+                    h_instr = self.prefix_cache_inst_states.mean(0).detach()  # (batch, hidden)
+                    suffix_end = optim_slice.stop
+                    h_out = last_hidden[:, suffix_end - 1, :]  # (batch, hidden)
+                    cos_sim = F.cosine_similarity(h_out, h_instr, dim=-1).mean()
+                    loss = ce_loss + self.cancellation_loss_weight * cos_sim
+                else:
+                    loss = ce_loss
 
             embed_grads = torch.autograd.grad(outputs=[loss], inputs=[input_embeds])[0]
             gc.collect()

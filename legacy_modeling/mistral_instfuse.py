@@ -181,7 +181,7 @@ class MistralForCausalLMFuse(transformers.MistralForCausalLM):
         self.vocab_size = config.vocab_size
         self.vocab_size      = config.vocab_size
         self.hidden_size     = config.hidden_size
-        self.residual_weight = nn.Parameter(torch.tensor([0.01])) # 0.5 weight assigned to the last instruction token
+        self.residual_weight = nn.Parameter(torch.tensor([0.0])) # 0.5 weight assigned to the last instruction token
         self.response_label  = 2
         self.instruct_label  = 0
         self.final_tap = torch.nn.Identity()  # <— dummy tap point
@@ -304,76 +304,26 @@ class MistralForCausalLMFuse(transformers.MistralForCausalLM):
         num_logits_to_keep=None,
         **kwargs,
     ):
+        model_inputs = super().prepare_inputs_for_generation(
+            input_ids=input_ids,
+            past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            cache_position=cache_position,
+            position_ids=position_ids,
+            use_cache=use_cache,
+            num_logits_to_keep=num_logits_to_keep,
+            **kwargs,
+        )
         expert_labels = kwargs.pop("expert_labels", None)
 
-        if past_key_values is not None:
-            if inputs_embeds is not None:  # Exception 1
-                input_ids = input_ids[:, -cache_position.shape[0] :]
-            elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
-                input_ids = input_ids[:, cache_position]
-
-        if attention_mask is not None and position_ids is None:
-            # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
-                # This `clone` call is needed to avoid recapturing cuda graphs with `torch.compile`'s  `mode="reduce-overhead`, as otherwise the input `position_ids` would have various stride during the decoding. Here, simply using `.contiguous()` is not sufficient as in the batch size = 1 case, `position_ids` is already contiguous but with varying stride which retriggers a capture.
-                position_ids = position_ids.clone(memory_format=torch.contiguous_format)
-                if expert_labels is not None:
-                    expert_labels = expert_labels[:,-input_ids.shape[1]:]  # the expert label will inherit the last token's expert label
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and cache_position[0] == 0:
-            model_inputs = {"inputs_embeds": inputs_embeds, "input_ids": None}
-        else:
-            # The clone here is for the same reason as for `position_ids`.
-            model_inputs = {"input_ids": input_ids.clone(memory_format=torch.contiguous_format), "inputs_embeds": None}
-        if isinstance(past_key_values, StaticCache) and attention_mask.ndim == 2:
-            if model_inputs["inputs_embeds"] is not None:
-                batch_size, sequence_length, _ = model_inputs["inputs_embeds"].shape
-                device = model_inputs["inputs_embeds"].device
-            else:
-                batch_size, sequence_length = model_inputs["input_ids"].shape
-                device = model_inputs["input_ids"].device
-
-            dtype = self.lm_head.weight.dtype
-            min_dtype = torch.finfo(dtype).min
-            if attention_mask is not None and attention_mask.dim() == 4:
-                # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
-                pass
-            else:
-                target_length=past_key_values.get_max_length()
-                causal_mask = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype,
-                                         device=device)
-                if sequence_length != 1:
-                    causal_mask = torch.triu(causal_mask, diagonal=1)
-                causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-                causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
-                if attention_mask is not None:
-                    causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-                    mask_length = attention_mask.shape[-1]
-                    padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
-                    padding_mask = padding_mask == 0
-                    causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                        padding_mask, min_dtype
-                    )
-                attention_mask = causal_mask
-
-        if num_logits_to_keep is not None:
-            model_inputs["num_logits_to_keep"] = num_logits_to_keep
-
-        model_inputs.update(
-            {
-                "position_ids": position_ids,
-                "cache_position": cache_position,
-                "past_key_values": past_key_values,
-                "use_cache": use_cache,
-                "attention_mask": attention_mask,
-            }
-        )
-        # 8. Remove unexpected `generate` inputs (TODO @joao: fix trainer and examples)
-        model_inputs.pop("labels", None)
+        if (
+            attention_mask is not None
+            and position_ids is None
+            and past_key_values is not None
+        ):
+            if expert_labels is not None:
+                expert_labels = expert_labels[:,-model_inputs["input_ids"].shape[1]:]  # the expert label will inherit the last token's expert label
         if expert_labels is not None:
             model_inputs["expert_labels"] = expert_labels
 
@@ -396,5 +346,3 @@ class MistralForCausalLMFuse(transformers.MistralForCausalLM):
         if hasattr(outputs, "past_inst_hidden_states"):
             model_kwargs["past_inst_hidden_states"] = outputs.past_inst_hidden_states # cache the last instruction token hidden state
         return model_kwargs
-
-
