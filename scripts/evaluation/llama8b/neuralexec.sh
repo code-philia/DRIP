@@ -27,13 +27,13 @@ EXTRA_FLAGS=""
 
 case "$MODEL_PATH" in
     *instfuse*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMFuse --trigger_name llama-ours"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMFuse --trigger_name llama-ours"
         ;;
     *ise*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMMoE --trigger_name llama-ise"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoE --trigger_name llama-ise"
         ;;
     *possep*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMMoEV2 --trigger_name llama-pft"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoEV2 --trigger_name llama-pft"
         ;;
     *secalign*)
         EXTRA_FLAGS="--trigger_name llama-secalign"

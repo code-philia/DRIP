@@ -1,7 +1,9 @@
 #!/bin/bash
+# 1. Source Conda configuration (Adjust path if necessary)
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate prompt  # Replace with your actual env name
 
 set -euo pipefail
-IFS=$'\n\t'
 
 # === Prompt for CUDA device ===
 read -p "Enter CUDA device ID to use (default: 0): " CUDA_ID
@@ -27,22 +29,22 @@ EXTRA_FLAGS=""
 
 case "$MODEL_PATH" in
     *instfuse*nofusion*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMNoFuse"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMNoFuse"
         ;;
     *instfuse*concatfusion*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMConcatFuse"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMConcatFuse"
         ;;
     *instfuse*embeddingshift*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMEmbeddingShift"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMEmbeddingShift"
         ;;
     *instfuse*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMFuse"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMFuse"
         ;;
     *ise*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMMoE"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoE"
         ;;
     *possep*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMMoEV2"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoEV2"
         ;;
 esac
 
@@ -53,14 +55,15 @@ else
 fi
 
 echo "Executing test..."
-CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.sep.test_sep --model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
+
+CMD_ARGS="--model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
 
 echo
 echo "⚙ Running:"
-echo "$CMD"
+echo "CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.sep.test_sep $CMD_ARGS"
 echo
 
 # -----------------------------
 # Execute
 # -----------------------------
-eval $CMD
+CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.sep.test_sep $CMD_ARGS

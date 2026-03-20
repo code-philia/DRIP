@@ -121,8 +121,6 @@ if __name__ == "__main__":
                         choices=['none', 'sandwich', 'reminder', 'fakecompletion', 'thinkintervene',
                                  'spotlight_delimit', 'spotlight_datamark', 'spotlight_encode'],
                         help='Baseline test-time zero-shot prompting defense')
-    parser.add_argument('--pass_expert_labels', default=False,
-                        help="Whether to past expert labels instruction/data as an input", action='store_true')
     parser.add_argument('--customized_model_class', type=str, help="Customized model class", default='')
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
@@ -186,8 +184,6 @@ if __name__ == "__main__":
             _, _, _, injected_out = test_model_output([data_with_prob],
                                                         model, tokenizer,
                                                         attack_log_file=None,
-                                                        frontend_delimiters=frontend_delimiters,
-                                                        pass_expert_labels=args.pass_expert_labels,
                                                         print_results=False
                                                       )
             data_with_prob_response: str = injected_out[0][0]
@@ -195,8 +191,6 @@ if __name__ == "__main__":
             _, _, _, clean_out = test_model_output([instruction_with_prob],
                                                      model, tokenizer,
                                                      attack_log_file=None,
-                                                     frontend_delimiters=frontend_delimiters,
-                                                     pass_expert_labels=args.pass_expert_labels,
                                                      print_results=False
                                                    )
             instruction_with_prob_response: str = clean_out[0][0]

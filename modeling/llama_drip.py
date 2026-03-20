@@ -1,0 +1,473 @@
+import transformers
+import torch
+from transformers import LlamaConfig
+from transformers.models.llama.modeling_llama import ACT2FN
+from transformers.utils import logging
+from typing import Union, Optional, Tuple, List, Dict, Any
+from torch import nn
+from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast, ModelOutput
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from torch.nn import CrossEntropyLoss
+from transformers.cache_utils import Cache, DynamicCache
+import torch.nn.functional as F
+from functools import partial
+from dataclasses import dataclass
+from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask, create_masks_for_generate
+from transformers.processing_utils import Unpack
+from transformers.utils import TransformersKwargs
+import inspect
+logger = logging.get_logger(__name__)
+
+def _get_last_indices(label_index: int, expert_labels: torch.LongTensor) -> torch.LongTensor:
+    batch_size, seq_len = expert_labels.shape
+    mask = (expert_labels == label_index)  # (B, L)
+    seq_indices = torch.arange(seq_len, device=expert_labels.device).unsqueeze(0)  # (1, L)
+    all_negative_one = torch.full_like(seq_indices, -1)
+    # set non-equal positions to -1
+    masked_indices = torch.where(mask, seq_indices, all_negative_one)  # (B, L)
+    last_indices = masked_indices.max(dim=1)[0]  # (B,)
+    return last_indices  # may contain -1
+
+
+def _find_first_occurrence(seq: torch.LongTensor, separator: torch.LongTensor) -> int:
+    """Return the start index of the first occurrence of `separator` in `seq`, or -1."""
+    sep_len = len(separator)
+    for i in range(len(seq) - sep_len + 1):
+        if torch.equal(seq[i:i + sep_len], separator):
+            return i
+    return -1
+
+
+def _find_last_occurrence(seq: torch.LongTensor, separator: torch.LongTensor) -> int:
+    """Return the start index of the last occurrence of `separator` in `seq`, or -1."""
+    sep_len = len(separator)
+    last_index = -1
+    for i in range(len(seq) - sep_len + 1):
+        if torch.equal(seq[i:i + sep_len], separator):
+            last_index = i
+    return last_index
+
+
+def _compute_expert_labels_from_input_ids(
+    input_ids: torch.LongTensor,      # (B, L)
+    data_delm_ids: List[int],
+    response_delm_ids: List[int],
+    inst_delm_ids: Optional[List[int]] = None,
+    num_labels: int = 3,
+) -> torch.LongTensor:
+    """
+    Compute expert_labels on-the-fly from input_ids, replicating
+    compute_expert_labels() from struq.py — but batched and on-device.
+
+    Label scheme (num_labels=3):
+        0 = system instruction  (default)
+        1 = data input          (after first data delimiter)
+        2 = response            (after last response delimiter)
+
+    Label scheme (num_labels=4):
+        0 = preamble/padding    (default)
+        1 = user instruction    (after first inst delimiter)
+        2 = data input          (after first data delimiter)
+        3 = response            (after last response delimiter)
+
+    For decode steps (L==1), all tokens are labelled as response
+    (label = num_labels - 1), because the model is generating and
+    we already handled the prefill correctly.
+    """
+    B, L = input_ids.shape
+    device = input_ids.device
+    response_label = num_labels - 1
+
+    # Decode step: single new token, always response
+    if L == 1:
+        return torch.full((B, 1), fill_value=response_label,
+                          dtype=torch.long, device=device)
+
+    data_sep = torch.tensor(data_delm_ids,     dtype=torch.long, device=device)
+    resp_sep = torch.tensor(response_delm_ids, dtype=torch.long, device=device)
+    inst_sep = (torch.tensor(inst_delm_ids, dtype=torch.long, device=device)
+                if inst_delm_ids is not None else None)
+
+    expert_labels = torch.zeros(B, L, dtype=torch.long, device=device)
+
+    for b in range(B):
+        seq = input_ids[b]  # (L,)
+
+        if num_labels == 3:
+            data_pos = _find_first_occurrence(seq, data_sep)
+            if data_pos != -1:
+                expert_labels[b, data_pos:] = 1
+
+            resp_pos = _find_last_occurrence(seq, resp_sep)
+            if resp_pos != -1:
+                expert_labels[b, resp_pos:] = 2
+
+        elif num_labels == 4:
+            if inst_sep is not None:
+                inst_pos = _find_first_occurrence(seq, inst_sep)
+                if inst_pos != -1:
+                    expert_labels[b, inst_pos:] = 1
+
+            data_pos = _find_first_occurrence(seq, data_sep)
+            if data_pos != -1:
+                expert_labels[b, data_pos:] = 2
+
+            resp_pos = _find_last_occurrence(seq, resp_sep)
+            if resp_pos != -1:
+                expert_labels[b, resp_pos:] = 3
+
+        else:
+            raise ValueError(f"num_labels must be 3 or 4, got {num_labels}")
+
+    return expert_labels
+
+
+class LlamaFuseConfig(LlamaConfig):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.num_experts   = kwargs.get('num_experts', 3)
+        self.residual      = kwargs.get('residual', True)
+        self.bit_flip      = kwargs.get('bit_flip', True)
+        # Delimiter token IDs stored as plain int lists so they serialise
+        # cleanly into config.json via from_pretrained / save_pretrained.
+        # Set these once at training time (see helper below).
+        self.data_delm_ids     = kwargs.get('data_delm_ids', None)      # List[int]
+        self.response_delm_ids = kwargs.get('response_delm_ids', None)  # List[int]
+        self.inst_delm_ids     = kwargs.get('inst_delm_ids', None)      # List[int] | None
+        self.num_labels        = kwargs.get('num_labels', 3)
+
+
+def set_delimiter_ids_in_config(
+    config: LlamaFuseConfig,
+    tokenizer,
+    inst_delm: str,
+    data_delm: str,
+    response_delm: str,
+    num_labels: int = 3,
+) -> None:
+    """
+    Helper: encode delimiter strings and store them in `config` so the model
+    can auto-compute expert_labels at runtime without any external input.
+
+    Call this once before saving the trained model, e.g.:
+        set_delimiter_ids_in_config(model.config, tokenizer,
+                                    inst_delm, data_delm, resp_delm)
+        model.save_pretrained(save_path)
+    """
+    encode = lambda s: tokenizer(s, add_special_tokens=False).input_ids
+    config.data_delm_ids     = encode(data_delm)
+    config.response_delm_ids = encode(response_delm)
+    config.inst_delm_ids     = encode(inst_delm)
+    config.num_labels        = num_labels
+
+
+@dataclass
+class CausalLMFuseOutputWithPast(CausalLMOutputWithPast):
+    past_inst_hidden_states: Optional[torch.FloatTensor] = None
+
+
+class LlamaModel(transformers.LlamaModel):
+    _no_split_modules = ["LlamaDecoderLayer"]
+
+    def __init__(self, config: LlamaConfig):
+        super().__init__(config)
+        self.config = config
+        self.deinstruction_shift = nn.Linear(config.hidden_size, config.hidden_size, bias=True) # rotation+scale+shift
+        self.layers = nn.ModuleList(
+            [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
+        self.instruct_label  = 0
+        self.data_label = 1
+        self.residual_weight = nn.Parameter(torch.tensor([-1.0986])) # 0.5 weight assigned to the last instruction token
+        self.shift_tap = torch.nn.Identity()  # <— dummy tap point
+        self.post_init()
+
+    def _has_delimiter_config(self) -> bool:
+        """Return True if the config carries enough delimiter info to auto-compute labels."""
+        return (
+            getattr(self.config, 'data_delm_ids', None) is not None
+            and getattr(self.config, 'response_delm_ids', None) is not None
+        )
+
+    def _auto_expert_labels(
+        self,
+        input_ids: Optional[torch.LongTensor],
+    ) -> Optional[torch.LongTensor]:
+        """
+        Compute expert_labels from input_ids if delimiter IDs are configured.
+        Returns None when input_ids is None (e.g. inputs_embeds path in GCG)
+        or when delimiter config is absent (backwards-compat / plain inference).
+        """
+        if input_ids is None or not self._has_delimiter_config():
+            return None
+        return _compute_expert_labels_from_input_ids(
+            input_ids=input_ids,
+            data_delm_ids=self.config.data_delm_ids,
+            response_delm_ids=self.config.response_delm_ids,
+            inst_delm_ids=getattr(self.config, 'inst_delm_ids', None),
+            num_labels=getattr(self.config, 'num_labels', 3),
+        )
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        expert_labels: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutputWithPast:
+        output_attentions = kwargs.get("output_attentions", False)
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+
+        if inputs_embeds is None:
+            inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
+
+        # === 兼容旧版 tuple/list KV ===
+        if isinstance(past_key_values, (list, tuple)):
+            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache()
+
+        if cache_position is None:
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position: torch.Tensor = torch.arange(
+                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+            )
+
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
+
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
+
+        hidden_states = inputs_embeds
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        all_self_attns = [] if output_attentions else None
+
+        # --- Auto-compute expert_labels if not provided externally -----------
+        # Priority: explicit argument > auto-compute from input_ids > None
+        if expert_labels is None:
+            expert_labels = self._auto_expert_labels(input_ids)
+        # ---------------------------------------------------------------------
+
+        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            # one-bit flip for First attention's input
+            if self.config.bit_flip and layer_idx == 0:
+            # if self.config.bit_flip and layer_idx == self.config.num_hidden_layers-1:
+                if expert_labels is not None:
+                    inst_mask_2d = (expert_labels == self.data_label)  # B, L
+                    inst_mask_3d = inst_mask_2d.unsqueeze(-1).expand_as(hidden_states)
+                    shifts = self.deinstruction_shift(hidden_states) # why having different shifts for different samples?
+                    hidden_states  = torch.where(
+                        inst_mask_3d,
+                        shifts + hidden_states,
+                        hidden_states
+                    )
+            hidden_states = self.shift_tap(hidden_states)
+            if output_attentions:
+                hidden_states, attn_weights = decoder_layer(
+                    hidden_states,
+                    attention_mask=causal_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_values,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                    **kwargs,
+                )
+                all_self_attns.append(attn_weights)
+            else:
+                hidden_states = decoder_layer(
+                    hidden_states,
+                    attention_mask=causal_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_values,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                    **kwargs,
+                )
+
+        hidden_states = self.norm(hidden_states)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=past_key_values,
+            attentions=tuple(all_self_attns) if output_attentions else None,
+        )
+
+
+class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
+    _tied_weights_keys = ["lm_head.weight"]
+    _tp_plan = {"lm_head": "colwise_rep"}
+    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+
+    def __init__(self, config: LlamaFuseConfig):
+        super().__init__(config)
+        del self.model
+        self.model      = LlamaModel(config)
+        self.vocab_size = config.vocab_size
+        self.vocab_size      = config.vocab_size
+        self.hidden_size     = config.hidden_size
+        self.residual_weight = nn.Parameter(torch.tensor([0.0])) # 0.5 weight assigned to the last instruction token
+        self.response_label  = 2
+        self.instruct_label  = 0
+        self.final_tap = torch.nn.Identity()  # <— dummy tap point
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        expert_labels: torch.LongTensor = None,   # ← add back, used by GCG/inputs_embeds path
+        past_inst_hidden_states: Optional[Union[Cache, torch.FloatTensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> CausalLMFuseOutputWithPast:
+
+        # Resolve expert_labels for the residual-fusion logic below.
+        # If the caller didn't pass them but the model auto-computed them
+        # internally, we need the same labels here. Re-derive them cheaply
+        # (L==1 decode step returns all-2 immediately, so this is cheap).
+        if expert_labels is None and self.model._has_delimiter_config() and input_ids is not None:
+            expert_labels = self.model._auto_expert_labels(input_ids)
+
+        # expert_labels is forwarded to self.model; if None and config has
+        # delimiter ids, self.model will auto-compute it from input_ids.
+        outputs: BaseModelOutputWithPast = self.model(
+            input_ids=input_ids,
+            expert_labels=expert_labels,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
+
+        hidden_states = outputs.last_hidden_state
+        hidden_states = self.final_tap(hidden_states)
+
+        if expert_labels is not None:
+            batch_size, length, hidden_size = hidden_states.shape
+            is_generation = (length == 1) and (past_inst_hidden_states is not None) # is it in newly-generated-token phase?
+            if (not is_generation) and (self.config.residual): # for newly generated token, do not add the instruction semantic
+                batch_idx = torch.arange(batch_size, device=hidden_states.device)  # (B,)
+
+                if past_inst_hidden_states is not None:
+                    last_inst = past_inst_hidden_states.to(hidden_states.device)
+                else:
+                    last_inst_indices = _get_last_indices(self.instruct_label, expert_labels)
+
+                    # Prevent having -1
+                    safe_indices = last_inst_indices.clamp(min=0)
+                    last_inst = hidden_states[batch_idx, safe_indices]
+                    invalid_mask = (last_inst_indices == -1).unsqueeze(-1)  # (B, 1)
+                    last_inst = last_inst.masked_fill(invalid_mask, 0.0)
+
+                    past_inst_hidden_states = last_inst.clone().detach()
+
+                end_indices = _get_last_indices(self.response_label, expert_labels) # (B,)
+                end_state   = hidden_states[batch_idx, end_indices]  # (B, H)
+
+                # Add last instruction token's semantic as a residual connection to the 1st response token
+                fuse_factor  = torch.sigmoid(self.residual_weight)  # fixme: factor between 0 and 1
+                fused_states = torch.lerp(end_state, last_inst, fuse_factor) # fixme: only last layer? (B, H)
+
+                mask2d = torch.zeros(batch_size, length, dtype=torch.bool, device=hidden_states.device)
+                mask2d[batch_idx, end_indices] = True
+                mask3d = mask2d.unsqueeze(-1) # broadcast to (B, L, 1)
+
+                fused_states = fused_states.unsqueeze(1).expand(-1, length, -1) # expand mixed_states (B, H) → (B, L, H)
+                hidden_states = torch.where(mask3d, fused_states, hidden_states)
+
+        hidden_states = hidden_states.to(self.lm_head.weight.dtype)
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(hidden_states[:, slice_indices, :])
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+
+        return CausalLMFuseOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_inst_hidden_states=past_inst_hidden_states,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    def prepare_inputs_for_generation(
+        self,
+        input_ids: torch.LongTensor,
+        past_key_values: Optional[Cache] = None,
+        attention_mask: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ):
+        model_inputs = super().prepare_inputs_for_generation(
+            input_ids=input_ids,
+            past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            cache_position=cache_position,
+            **kwargs
+        )
+
+        # expert_labels: still accepted from caller for backwards-compat
+        # (e.g. GCG passes them explicitly via inputs_embeds path).
+        # When delimiter ids are in config, they are NOT needed here —
+        # the model will auto-compute them inside forward().
+        expert_labels = kwargs.pop("expert_labels", None)
+        if expert_labels is not None:
+            position_ids_key = "decoder_position_ids" if self.config.is_encoder_decoder else "position_ids"
+            if (
+                attention_mask is not None
+                and kwargs.get(position_ids_key) is None
+                and position_ids_key in set(inspect.signature(self.forward).parameters.keys())
+            ):
+                expert_labels = expert_labels[:, -model_inputs["input_ids"].shape[1]:]
+            model_inputs["expert_labels"] = expert_labels
+
+        past_inst_hidden_states = kwargs.get("past_inst_hidden_states", None)
+        if past_inst_hidden_states is not None:
+            model_inputs["past_inst_hidden_states"] = past_inst_hidden_states
+        return model_inputs
+
+    def _update_model_kwargs_for_generation(
+        self,
+        outputs: ModelOutput,
+        model_kwargs: Dict[str, Any],
+        is_encoder_decoder: bool = False,
+        standardize_cache_format: bool = False,
+        num_new_tokens: int = 1,
+    ) -> Dict[str, Any]:
+
+        model_kwargs = super()._update_model_kwargs_for_generation(
+            outputs,
+            model_kwargs,
+            is_encoder_decoder,
+            num_new_tokens,
+        )
+        if hasattr(outputs, "past_inst_hidden_states"):
+            model_kwargs["past_inst_hidden_states"] = outputs.past_inst_hidden_states # cache the last instruction token hidden state
+        return model_kwargs
+

@@ -90,8 +90,6 @@ if __name__ == "__main__":
     parser.add_argument('-m', '--model_name_or_path', type=str, nargs="+")
     parser.add_argument('--trigger_name', type=str, choices=list(TRIGGER.keys()))
     parser.add_argument('--data_path', type=str, default='datasets/davinci_003_outputs.json')
-    parser.add_argument('--pass_expert_labels', default=False,
-                        help="Whether to past expert labels instruction/data as an input", action='store_true')
     parser.add_argument('--customized_model_class', type=str, help="Customized model class", default='')
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
@@ -119,8 +117,6 @@ if __name__ == "__main__":
                                                                       model,
                                                                       tokenizer,
                                                                       attack_log_file=attack_log_file,
-                                                                      frontend_delimiters=frontend_delimiters,
-                                                                      pass_expert_labels=args.pass_expert_labels,
                                                                       print_results=True
                                                                       )
 

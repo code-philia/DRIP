@@ -23,9 +23,9 @@ from config import (
     SPECIAL_DELM_TOKENS,
     FILTERED_TOKENS
 )
-from modeling import LlamaForCausalLMFuse, LlamaForCausalLMNoFuse, LlamaForCausalLMConcatFuse, LlamaForCausalLMEmbeddingShift, \
-    LlamaForCausalLMMoE, LlamaForCausalLMMoEV2, LlamaMoEConfig, LlamaFuseConfig
-from modeling import MistralForCausalLMFuse, MistralForCausalLMFuseV2, MistralForCausalLMMoE, MistralForCausalLMMoEV2, MistralMoEConfig, MistralFuseConfig
+from modeling import LlamaForCausalLMFuse, set_delimiter_ids_in_config, \
+    LlamaForCausalLMMoE, LlamaMoEConfig, LlamaFuseConfig, LlamaForCausalLMMoEV2
+from modeling import MistralForCausalLMFuse, MistralForCausalLMMoE, MistralForCausalLMMoEV2, MistralMoEConfig, MistralFuseConfig
 from modeling import (
     Qwen3FuseConfig,
     Qwen3ForCausalLMFuse,
@@ -58,9 +58,9 @@ except Exception:
 
 REGISTRY: Dict[str, Tuple[type, type]] = {
     "LlamaForCausalLMFuse": (LlamaFuseConfig, LlamaForCausalLMFuse),
-    "LlamaForCausalLMConcatFuse": (LlamaFuseConfig, LlamaForCausalLMConcatFuse),
-    "LlamaForCausalLMNoFuse": (LlamaFuseConfig, LlamaForCausalLMNoFuse),
-    "LlamaForCausalLMEmbeddingShift": (LlamaFuseConfig, LlamaForCausalLMEmbeddingShift),
+    # "LlamaForCausalLMConcatFuse": (LlamaFuseConfig, LlamaForCausalLMConcatFuse),
+    # "LlamaForCausalLMNoFuse": (LlamaFuseConfig, LlamaForCausalLMNoFuse),
+    # "LlamaForCausalLMEmbeddingShift": (LlamaFuseConfig, LlamaForCausalLMEmbeddingShift),
     "LlamaForCausalLMMoE": (LlamaMoEConfig, LlamaForCausalLMMoE),
     "LlamaForCausalLMMoEV2": (LlamaMoEConfig, LlamaForCausalLMMoEV2),
     "MistralForCausalLMFuse": (MistralFuseConfig, MistralForCausalLMFuse),
@@ -76,6 +76,7 @@ def load_model_and_tokenizer(
     trained_model_path: str,
     customized_model_class: Optional[str],
     tokenizer_path: Optional[str] = None,
+    delims: List[str] = [" ", " ", " "],
     device_map: Optional[int | Dict[str, int] | str] = None,
     **_,
 ):
@@ -88,6 +89,8 @@ def load_model_and_tokenizer(
         if customized_model_class:
             Cfg, Cls = REGISTRY[customized_model_class]
             cfg   = Cfg.from_pretrained(trained_model_path)
+            set_delimiter_ids_in_config(cfg, tok,
+                                        delims[0], delims[1], delims[2])
             model = Cls.from_pretrained(trained_model_path, config=cfg, torch_dtype=torch.float16, device_map=device_map)
         elif ("secalign" in trained_model_path) or ("struq" in trained_model_path):
             model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -136,7 +139,7 @@ def load_full_model(model_path: str, customized_model_class: Optional[str], load
     training_attacks = "NaiveCompletion"
     if not load_model:
         return model_path, delims
-    model, tok = load_model_and_tokenizer(base, model_path, customized_model_class, device_map=device_map)
+    model, tok = load_model_and_tokenizer(base, model_path, customized_model_class, delims=DELIMITERS[delims], device_map=device_map)
     if hasattr(model, "generation_config"): model.generation_config.pad_token_id = tok.pad_token_id
     return model, tok, delims, training_attacks
 
@@ -199,8 +202,8 @@ def form_llm_input(data, injection_method, fmt, apply_filter, defense, sample_id
 
 
 @torch.inference_mode()
-def test_model_output(llm_inputs, model, tokenizer, frontend_delimiters,
-                      attack_log_file=None, pass_expert_labels=False, print_results=False):
+def test_model_output(llm_inputs, model, tokenizer,
+                      attack_log_file=None, print_results=False):
     max_new_tokens = 512
     in_resp = begin = exact = 0
     outs, n = [], len(llm_inputs)
@@ -217,13 +220,10 @@ def test_model_output(llm_inputs, model, tokenizer, frontend_delimiters,
     for i, lm_input in enumerate(llm_inputs):
         toks = _tokenize_fn([lm_input],
                             tokenizer,
-                            frontend_delimiters=frontend_delimiters,
-                            compute_gate=bool(pass_expert_labels))
+                            )
         inp = toks["input_ids"][0].unsqueeze(0).to(model.device)
         gen_kwargs = dict(attention_mask=torch.ones_like(inp), do_sample=False,
                           max_new_tokens=max_new_tokens, use_cache=True)
-        if pass_expert_labels:
-            gen_kwargs["expert_labels"] = toks["expert_labels"][0].unsqueeze(0).to(model.device)
         out_ids = model.generate(inp, **gen_kwargs)
         out = tokenizer.decode(out_ids[0, inp.shape[1]:], skip_special_tokens=True)
 
@@ -374,6 +374,7 @@ def test_parser():
                                  "completion_close_1hash", "completion_close_2hash", "completion_close_0hash", "completion_close_upper", "completion_close_title", "completion_close_nospace",
                                  "completion_close_nocolon", "completion_close_typo", "completion_close_similar",
                                  "completion_close_ownlower", "completion_close_owntitle", "completion_close_ownhash", "completion_close_owndouble",
+                                 "completion_escape_ignore",
                                  "escape_deletion", "hackaprompt",
                                  "inject_pos_0", "inject_pos_10", "inject_pos_20", "inject_pos_30", "inject_pos_40",
                                  "inject_pos_50", "inject_pos_60", "inject_pos_70", "inject_pos_80", "inject_pos_90", "inject_pos_100",
@@ -385,12 +386,12 @@ def test_parser():
                         choices=['none', 'sandwich', 'reminder', 'fakecompletion', 'thinkintervene',
                                  'spotlight_delimit', 'spotlight_datamark', 'spotlight_encode'],
                         help='Baseline test-time zero-shot prompting defense')
-    parser.add_argument('--data_path', type=str, default='datasets/gpt4o_outputs.json')
+    # parser.add_argument('--data_path', type=str, default='./datasets/gpt4o_outputs.json')
+    parser.add_argument('--data_path', type=str, default='./datasets/davinci_003_outputs.json')
     parser.add_argument('--openai_config_path', type=str, default='datasets/openai_configs.yaml')
     parser.add_argument("--sample_ids", type=int, nargs="+", default=None,
                         help='Sample ids to test in GCG, None for testing all samples')
     parser.add_argument('--log', default=False, action='store_true')
-    parser.add_argument('--pass_expert_labels', default=False, help="Whether to past expert labels instruction/data as an input", action='store_true')
     parser.add_argument('--customized_model_class', type=str, help="Customized model class", default='')
     return parser.parse_args()
 
@@ -439,8 +440,6 @@ if __name__ == "__main__":
                                                                                  model,
                                                                                  tokenizer,
                                                                                  attack_log_file=attack_log_file,
-                                                                                 frontend_delimiters=frontend_delimiters,
-                                                                                 pass_expert_labels=args.pass_expert_labels,
                                                                                  print_results=True if a == 'none' else False
                                                                               )
 

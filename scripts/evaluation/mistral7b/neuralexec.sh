@@ -27,13 +27,13 @@ EXTRA_FLAGS=""
 
 case "$MODEL_PATH" in
     *instfuse*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMFuse --trigger_name mistral-ours"
+        EXTRA_FLAGS="--customized_model_class MistralForCausalLMFuse --trigger_name mistral-ours"
         ;;
     *ise*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMMoE --trigger_name mistral-ise"
+        EXTRA_FLAGS="--customized_model_class MistralForCausalLMMoE --trigger_name mistral-ise"
         ;;
     *possep*)
-        EXTRA_FLAGS="--pass_expert_labels --customized_model_class MistralForCausalLMMoEV2 --trigger_name mistral-pft"
+        EXTRA_FLAGS="--customized_model_class MistralForCausalLMMoEV2 --trigger_name mistral-pft"
         ;;
     *secalign*)
         EXTRA_FLAGS="--trigger_name mistral-secalign"

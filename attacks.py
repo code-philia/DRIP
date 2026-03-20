@@ -255,6 +255,29 @@ def completion_close_owndouble(d_item):
     return d_item
 
 
+def completion_escape_ignore(d_item):
+    escape_chars = '\n' * 5
+
+    # Step 2: fake completion (convince model the original task is done)
+    fake_completion = DELIMITERS['TextTextText'][2] + '\n' + d_item['output'][1:].split('\n')[
+        0]  # first line of real output
+
+    # Step 3: context ignoring sentence
+    ignore_sentence = np.random.choice(IGNORE_ATTACK_SENTENCES['test']).format(
+        injected_prompt=TEST_INJECTED_PROMPT
+    )
+
+    # Step 4: new fake instruction header + injected prompt
+    new_instruction = DELIMITERS['TextTextText'][0] + '\n' + ignore_sentence
+
+    d_item['input'] += (
+            escape_chars +
+            fake_completion + '\n\n' +
+            new_instruction + '\n' +
+            TEST_INJECTED_PROMPT.capitalize()
+    )
+    return d_item
+
 def hackaprompt(prompt_format):
     llm_input = []
     for d in IGNORE_ATTACK_SENTENCES['hackaprompt']:

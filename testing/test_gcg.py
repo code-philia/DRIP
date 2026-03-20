@@ -209,7 +209,6 @@ def test_model_output(
     model,
     tokenizer,
     frontend_delimiters,
-    pass_expert_labels: bool = False,
     print_results: bool = False,
 ):
     max_new_tokens = 512
@@ -224,8 +223,6 @@ def test_model_output(
         toks = _tokenize_fn(
             [lm_input],
             tokenizer,
-            frontend_delimiters=frontend_delimiters,
-            compute_gate=bool(pass_expert_labels),
         )
         inp = toks["input_ids"][0].unsqueeze(0).to(model.device)
         gen_kwargs = dict(
@@ -234,8 +231,6 @@ def test_model_output(
             max_new_tokens=max_new_tokens,
             use_cache=True,
         )
-        if pass_expert_labels:
-            gen_kwargs["expert_labels"] = toks["expert_labels"][0].unsqueeze(0).to(model.device)
         out_ids = model.generate(inp, **gen_kwargs)
         out = tokenizer.decode(out_ids[0, inp.shape[1] :], skip_special_tokens=True)
 
@@ -278,11 +273,15 @@ if __name__ == "__main__":
                         choices=['none', 'sandwich', 'instructional', 'reminder', 'isolation', 'incontext'],
                         help='Baseline test-time zero-shot prompting defense')
     parser.add_argument('--data_path', type=str, default='datasets/davinci_003_outputs.json')
-    parser.add_argument('--pass_expert_labels', default=False,
-                        help="Whether to past expert labels instruction/data as an input", action='store_true')
     parser.add_argument('--customized_model_class', type=str, help="Customized model class", default='')
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
+
+    # fixme: test on SEP
+    dataset = jload("./datasets/SEP_dataset.json")
+    data = [{"instruction": x["system_prompt_clean"],
+      "input": x["prompt_clean"]} for x in dataset][:100]
+
 
     model, tokenizer, frontend_delimiters, training_attacks = load_full_model(args.model_name_or_path,
                                                                               customized_model_class=args.customized_model_class)
@@ -384,7 +383,6 @@ if __name__ == "__main__":
             model,
             tokenizer,
             frontend_delimiters,
-            pass_expert_labels=args.pass_expert_labels
         )
 
     attack = GCGAttack(
@@ -405,7 +403,7 @@ if __name__ == "__main__":
         attack_log_file = os.path.join(log_path, f"{args.attack}-{args.defense}-{TEST_INJECTED_WORD}.csv")
 
 
-    data = [d for d in jload(args.data_path) if d["input"] != ""]
+    # data = [d for d in jload(args.data_path) if d["input"] != ""]
 
     # 2. Determine Resume State
     start_index = 0
@@ -451,7 +449,7 @@ if __name__ == "__main__":
 
             # gcg attack
             new_d_item  = gcg(d_item, attack, cfg, data_delm)
-            attacked_str = prompt_format['prompt_input'].format_map(d_item)
+            attacked_str = prompt_format['prompt_input'].format_map(new_d_item)
 
             (
                 sample_in_response,
@@ -462,8 +460,6 @@ if __name__ == "__main__":
                 llm_inputs=[attacked_str],
                 model=model,
                 tokenizer=tokenizer,
-                frontend_delimiters=frontend_delimiters,
-                pass_expert_labels=args.pass_expert_labels,
                 print_results=True
             )
 

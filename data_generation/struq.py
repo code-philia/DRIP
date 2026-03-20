@@ -170,7 +170,8 @@ def compute_expert_labels(seq, user_inst_seperator, data_seperator, response_sep
 
     return expert_this
 
-def _tokenize_fn(strings, tokenizer, frontend_delimiters, compute_gate=False, add_special_tokens=True):
+
+def _tokenize_fn(strings, tokenizer, add_special_tokens=True):
     tokenizer.model_max_length = 131072
     tokenized_list = [
         tokenizer(
@@ -185,50 +186,16 @@ def _tokenize_fn(strings, tokenizer, frontend_delimiters, compute_gate=False, ad
     ]
     input_ids = labels = [tokenized.input_ids[0] for tokenized in tokenized_list]
 
-    expert_labels = None
-    if compute_gate:
-        user_inst_seperator = tokenizer(
-            DELIMITERS[frontend_delimiters][0],
-            return_tensors="pt",
-            padding=False,
-            truncation=False,
-            add_special_tokens=False
-        ).input_ids[0]  # starting delimiter of data input
-
-        data_seperator = tokenizer(
-            DELIMITERS[frontend_delimiters][1],
-            return_tensors="pt",
-            padding=False,
-            truncation=False,
-            add_special_tokens=False
-        ).input_ids[0] # starting delimiter of data input
-
-        response_seperator = tokenizer(
-            DELIMITERS[frontend_delimiters][2],
-            return_tensors="pt",
-            padding=False,
-            truncation=False,
-            add_special_tokens=False
-        ).input_ids[0] # starting delimiter of response
-
-        # Find the starting delimiters of Input
-        expert_labels = []
-        for seq in input_ids:
-            expert_this = compute_expert_labels(seq, user_inst_seperator, data_seperator, response_seperator, num_labels=3)
-            expert_labels.append(expert_this)
-
     input_ids_lens = [
         tokenized.input_ids.ne(tokenizer.pad_token_id).sum().item() for tokenized in tokenized_list
     ]
-    expert_labels_lens = labels_lens = input_ids_lens
+    labels_lens = input_ids_lens
 
     return dict(
         input_ids=input_ids,
         labels=labels,
-        expert_labels=expert_labels,
         input_ids_lens=input_ids_lens,
         labels_lens=labels_lens,
-        expert_labels_lens=expert_labels_lens,
     )
 
 def preprocess(sources, targets, frontend_delimiters, tokenizer):
@@ -236,19 +203,17 @@ def preprocess(sources, targets, frontend_delimiters, tokenizer):
     examples = [s + t for s, t in zip(sources, targets)]
 
     # input + responses
-    examples_tokenized = _tokenize_fn(examples, tokenizer, frontend_delimiters=frontend_delimiters, compute_gate=True)
+    examples_tokenized = _tokenize_fn(examples, tokenizer)
     input_ids     = examples_tokenized["input_ids"]
-    expert_labels = examples_tokenized["expert_labels"]
 
     # input only => find the input length
-    sources_lengths = _tokenize_fn(sources, tokenizer, frontend_delimiters=frontend_delimiters, compute_gate=False)["input_ids_lens"]
+    sources_lengths = _tokenize_fn(sources, tokenizer)["input_ids_lens"]
 
     labels = deepcopy(input_ids)
     for label, source_len in zip(labels, sources_lengths):
         label[:source_len] = IGNORE_INDEX # ignore the prompt part, only interested in predicting responses
 
     return dict(input_ids=input_ids,
-                expert_labels=expert_labels,
                 labels=labels)
 
 
@@ -260,7 +225,6 @@ class SupervisedDataset(Dataset):
 
         self.input_ids = []
         self.labels = []
-        self.expert_labels = []
         self.data_source = []
 
         for data_path in data_path_list:
@@ -305,7 +269,6 @@ class SupervisedDataset(Dataset):
 
             self.input_ids.extend(data_dict["input_ids"])
             self.labels.extend(data_dict["labels"])
-            self.expert_labels.extend(data_dict["expert_labels"])
             self.data_source.extend([data_path] * len(sources))
 
         # Mix the dataset
@@ -315,7 +278,6 @@ class SupervisedDataset(Dataset):
         # Apply permutation using numpy for better performance
         self.input_ids = [self.input_ids[i] for i in combined]
         self.labels = [self.labels[i] for i in combined]
-        self.expert_labels = [self.expert_labels[i] for i in combined]
         self.data_source = [self.data_source[i] for i in combined]
 
     def __len__(self):
@@ -323,7 +285,6 @@ class SupervisedDataset(Dataset):
 
     def __getitem__(self, i):
         return dict(input_ids=self.input_ids[i],
-                    expert_labels=self.expert_labels[i],
                     labels=self.labels[i])
 
 
@@ -357,23 +318,18 @@ class DataCollatorForSupervisedDataset(object):
     tokenizer: transformers.PreTrainedTokenizer
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, expert_labels, labels = tuple([instance[key] for instance in instances]
-                                                 for key in ("input_ids", "expert_labels", "labels"))
+        input_ids, labels = tuple([instance[key] for instance in instances]
+                                                 for key in ("input_ids", "labels"))
 
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
-
-        expert_labels = torch.nn.utils.rnn.pad_sequence(
-            expert_labels, batch_first=True, padding_value=2
-        ) # pad the sequence with 2? (response)
 
         labels = torch.nn.utils.rnn.pad_sequence(
             labels, batch_first=True, padding_value=IGNORE_INDEX)
 
         return dict(
             input_ids=input_ids,
-            expert_labels=expert_labels,
             labels=labels,
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
