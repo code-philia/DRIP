@@ -1,12 +1,11 @@
-
-from config import PROMPT_FORMAT
+from config import PROMPT_FORMAT, DELIMITERS
 import torch
 import transformers
 from transformers import PreTrainedTokenizer
 from typing import Dict, Optional, Sequence, Union, Any, List, Tuple
 from dataclasses import dataclass, field
 from datasets import Dataset as HFDataset
-from .struq import jload, _tokenize_fn
+from .data_loader import jload, _tokenize_fn
 
 
 def generate_training_data_dpo(data_dicts: List[Dict], prompt_dict_name: str, tokenizer: PreTrainedTokenizer
@@ -49,7 +48,12 @@ class DPOCollatorWithExpert(object):
     max_length: int = 2048
     max_prompt_length: int = 1024
     max_target_length: int = 1024
-    expert_pad_val: int = 2
+    expert_pad_val: int = field(init=False)  # set in __post_init__ from num_labels
+
+    def __post_init__(self):
+        delm = DELIMITERS[self.frontend_delimiters]
+        num_labels = 4 if len(delm) == 4 else 3
+        self.expert_pad_val = num_labels - 1  # response label = highest label
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         prompt, chosen, rejected = tuple([instance[key] for instance in instances] for key in ("prompt", "chosen", "rejected"))

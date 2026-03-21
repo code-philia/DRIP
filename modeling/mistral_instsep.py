@@ -31,6 +31,9 @@ class MistralMoEConfig(MistralConfig):
         self.response_delm_ids = kwargs.get('response_delm_ids', None)
         self.inst_delm_ids     = kwargs.get('inst_delm_ids', None)
         self.num_labels        = kwargs.get('num_labels', 3)
+        self.instruct_label    = kwargs.get('instruct_label',  0 if self.num_labels == 3 else 1)
+        self.data_label        = kwargs.get('data_label',      1 if self.num_labels == 3 else 2)
+        self.response_label    = kwargs.get('response_label',  self.num_labels - 1)
         assert self.num_experts > 0, "num_experts must be > 0"
 
 

@@ -30,6 +30,9 @@ class MistralFuseConfig(MistralConfig):
         self.response_delm_ids = kwargs.get('response_delm_ids', None)  # List[int]
         self.inst_delm_ids     = kwargs.get('inst_delm_ids', None)      # List[int] | None
         self.num_labels        = kwargs.get('num_labels', 3)
+        self.instruct_label    = kwargs.get('instruct_label',  0 if self.num_labels == 3 else 1)
+        self.data_label        = kwargs.get('data_label',      1 if self.num_labels == 3 else 2)
+        self.response_label    = kwargs.get('response_label',  self.num_labels - 1)
 
 
 class MistralModel(transformers.MistralModel):
@@ -38,8 +41,8 @@ class MistralModel(transformers.MistralModel):
         self.config = config
         self.deinstruction_shift = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
         # Do NOT override self.layers — super().__init__() already builds it correctly
-        self.instruct_label  = 0
-        self.data_label      = 1
+        self.instruct_label  = config.instruct_label
+        self.data_label      = config.data_label
         self.residual_weight = nn.Parameter(torch.tensor([-1.0986]))
         self.shift_tap       = torch.nn.Identity()
         self.post_init()
@@ -166,8 +169,8 @@ class MistralForCausalLMFuse(transformers.MistralForCausalLM):
         self.vocab_size      = config.vocab_size
         self.hidden_size     = config.hidden_size
         self.residual_weight = nn.Parameter(torch.tensor([0.0]))
-        self.response_label  = 2
-        self.instruct_label  = 0
+        self.response_label  = config.response_label
+        self.instruct_label  = config.instruct_label
         self.final_tap       = torch.nn.Identity()
         self.post_init()
 
@@ -302,5 +305,3 @@ class MistralForCausalLMFuse(transformers.MistralForCausalLM):
         if hasattr(outputs, "past_inst_hidden_states"):
             model_kwargs["past_inst_hidden_states"] = outputs.past_inst_hidden_states
         return model_kwargs
-
-

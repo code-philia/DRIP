@@ -12,8 +12,8 @@ import shortuuid
 import torch
 from tqdm import tqdm
 from fastchat.llm_judge.common import load_questions, temperature_config
-from data_generation.struq import jload, _tokenize_fn, smart_tokenizer_and_embedding_resize
-from config import DELIMITERS
+from data_generation.data_loader import jload, _tokenize_fn, smart_tokenizer_and_embedding_resize
+from config import DELIMITERS, DEFAULT_SYSTEM_PROMPT
 from testing.test_gcg import CustomConversation
 from testing.test import load_full_model
 import fastchat
@@ -26,7 +26,6 @@ def run_eval(
     question_end,
     answer_file,
     max_new_token,
-    pass_expert_labels,
 conv_template
 ):
     questions = load_questions(question_file, question_begin, question_end)
@@ -44,7 +43,6 @@ conv_template
                 questions[i : i + chunk_size],
                 answer_file,
                 max_new_token,
-                pass_expert_labels,
                 conv_template
             )
         )
@@ -57,7 +55,6 @@ def get_model_answers(
     questions,
     answer_file,
     max_new_token,
-    pass_expert_labels,
     conv_template
 ):
 
@@ -78,11 +75,8 @@ def get_model_answers(
             conv.append_message(conv.roles[1], " " + conv.sep)  # Using resp_delm
             prompt = conv.get_prompt()
             tokenized_inpt = _tokenize_fn([prompt],
-                                          tokenizer,
-                                          frontend_delimiters=frontend_delimiters,
-                                          compute_gate=True)
+                                          tokenizer)
             input_ids = tokenized_inpt['input_ids'][0].unsqueeze(0).to(model.device)
-            expert_labels = tokenized_inpt['expert_labels'][0].unsqueeze(0).to(model.device)
 
             if temperature < 1e-4:
                 do_sample = False
@@ -91,25 +85,14 @@ def get_model_answers(
 
             # some models may error out when generating long outputs
             try:
-                if not pass_expert_labels:
-                    output_ids = model.generate(
-                        input_ids,
-                        attention_mask=torch.ones_like(input_ids),
-                        do_sample=do_sample,
-                        temperature=temperature,
-                        pad_token_id=tokenizer.pad_token_id,
-                        max_new_tokens=max_new_token,
-                    )
-                else:
-                    output_ids = model.generate(
-                        input_ids,
-                        attention_mask=torch.ones_like(input_ids),
-                        expert_labels=expert_labels,
-                        do_sample=do_sample,
-                        temperature=temperature,
-                        pad_token_id=tokenizer.pad_token_id,
-                        max_new_tokens=max_new_token,
-                    )
+                output_ids = model.generate(
+                    input_ids,
+                    attention_mask=torch.ones_like(input_ids),
+                    do_sample=do_sample,
+                    temperature=temperature,
+                    pad_token_id=tokenizer.pad_token_id,
+                    max_new_tokens=max_new_token,
+                )
                 if model.config.is_encoder_decoder:
                     output_ids = output_ids[0]
                 else:
@@ -196,7 +179,6 @@ if __name__ == "__main__":
     parser.add_argument("--answer-file", type=str, help="The output answer file.")
     parser.add_argument("--max-new-token", type=int, default=512, help="The maximum number of new generated tokens.",)
 
-    parser.add_argument('--pass_expert_labels', default=False, action='store_true')
     parser.add_argument('--customized_model_class', type=str, default='')
     args = parser.parse_args()
     args.model_name_or_path = args.model_path
@@ -207,7 +189,13 @@ if __name__ == "__main__":
     model_path = args.model_name_or_path
     log_path = f"{model_path}-log" if not os.path.exists(model_path) else model_path
 
-    inst_delm, data_delm, resp_delm = DELIMITERS[frontend_delimiters]
+    # Unpack delimiters safely for both 3-role and 4-role models.
+    # For 3-role: [system/inst, user/data, response]
+    # For 4-role: [system, user/inst, data/tool, response]
+    # The fastchat conv_template only needs (user_role_delm, response_delm).
+    _delm = DELIMITERS[frontend_delimiters]
+    inst_delm = _delm[1] if len(_delm) == 4 else _delm[0]  # user/instruction delimiter
+    resp_delm = _delm[-1]                                    # response delimiter always last
 
     if "struq" in model_path or "secalign" in model_path:
         fastchat.conversation.register_conv_template(
@@ -260,7 +248,6 @@ if __name__ == "__main__":
         question_end=args.question_end,
         answer_file=answer_file,
         max_new_token=args.max_new_token,
-        pass_expert_labels=args.pass_expert_labels,
         conv_template=conv_template
     )
 

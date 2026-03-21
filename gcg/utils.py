@@ -17,7 +17,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from gcg.eval_input import EvalInput
 from gcg.types import PrefixCache, TokenIds
-from data_generation.struq import compute_expert_labels
+from data_generation.data_loader import compute_expert_labels
 
 logger = logging.getLogger(__name__)
 from copy import deepcopy
@@ -77,7 +77,7 @@ class SuffixManager:
         "metasecalign"
     )
 
-    def __init__(self, *, tokenizer, use_system_instructions, conv_template):
+    def __init__(self, *, tokenizer, use_system_instructions, conv_template, mode: str = "suffix"):
         """Initialize suffix manager.
 
         Args:
@@ -89,6 +89,9 @@ class SuffixManager:
         self.use_system_instructions = use_system_instructions
         self.conv_template = conv_template
         self.is_tiktoken = not isinstance(tokenizer, AutoTokenizer)
+        if mode not in ("suffix", "prefix"):
+            raise ValueError(f"mode must be 'suffix' or 'prefix', got {mode!r}")
+        self.mode = mode
         logger.info(
             "SuffixManager initialized with conv_template=%s, is_tiktoken=%s, "
             "use_system_instructions=%s",
@@ -225,27 +228,82 @@ class SuffixManager:
             self.conv_template.update_last_message(adv_suffix)
         """
 
-        toks = self.tokenizer(self.conv_template.get_prompt()).input_ids + \
-               self.tokenizer(' ', add_special_tokens=False).input_ids + \
-               self.tokenizer(adv_suffix, add_special_tokens=False).input_ids + \
-               self.sep_tokens
-        optim_slice = slice(num_static_tokens, len(toks) - self.num_tok_sep)
+        # ------------------------------------------------------------------ #
+        # Build token sequence and compute slices.
+        #
+        # suffix mode (original):
+        #   [header] [SPACE adv_tokens] [sep] [ASST\n] [target] [eos]
+        #             ^-- optim_slice --^
+        #
+        # prefix mode:
+        #   The user message is "... [input] [TEST_INJECTED_PROMPT]".
+        #   We split it at TEST_INJECTED_PROMPT so the adv tokens land
+        #   just before it, giving:
+        #   [header+input_part] [adv_tokens SPACE] [injected_prompt] [sep] [ASST\n] [target] [eos]
+        #                        ^-- optim_slice --^
+        # ------------------------------------------------------------------ #
+        if self.mode == "suffix":
+            toks = self.tokenizer(self.conv_template.get_prompt()).input_ids + \
+                   self.tokenizer(' ', add_special_tokens=False).input_ids + \
+                   self.tokenizer(adv_suffix, add_special_tokens=False).input_ids + \
+                   self.sep_tokens
+            optim_slice = slice(num_static_tokens, len(toks) - self.num_tok_sep)
 
-        toks = self.tokenizer(self.conv_template.get_prompt()).input_ids + \
-               self.tokenizer(' ', add_special_tokens=False).input_ids + \
-               self.tokenizer(adv_suffix, add_special_tokens=False).input_ids + \
-               self.sep_tokens + \
-               self.tokenizer(self.conv_template.roles[1], add_special_tokens=False).input_ids + \
-               self.tokenizer('\n', add_special_tokens=False).input_ids
-        assistant_role_slice = slice(optim_slice.stop, len(toks))
+            toks = self.tokenizer(self.conv_template.get_prompt()).input_ids + \
+                   self.tokenizer(' ', add_special_tokens=False).input_ids + \
+                   self.tokenizer(adv_suffix, add_special_tokens=False).input_ids + \
+                   self.sep_tokens + \
+                   self.tokenizer(self.conv_template.roles[1], add_special_tokens=False).input_ids + \
+                   self.tokenizer('\n', add_special_tokens=False).input_ids
+            assistant_role_slice = slice(optim_slice.stop, len(toks))
 
-        toks = self.tokenizer(self.conv_template.get_prompt()).input_ids + \
-               self.tokenizer(' ', add_special_tokens=False).input_ids + \
-               self.tokenizer(adv_suffix, add_special_tokens=False).input_ids + \
-               self.sep_tokens + \
-               self.tokenizer(self.conv_template.roles[1], add_special_tokens=False).input_ids + \
-               self.tokenizer('\n' + target, add_special_tokens=False).input_ids + \
-               self.tokenizer(self.tokenizer.eos_token, add_special_tokens=False).input_ids
+            toks = self.tokenizer(self.conv_template.get_prompt()).input_ids + \
+                   self.tokenizer(' ', add_special_tokens=False).input_ids + \
+                   self.tokenizer(adv_suffix, add_special_tokens=False).input_ids + \
+                   self.sep_tokens + \
+                   self.tokenizer(self.conv_template.roles[1], add_special_tokens=False).input_ids + \
+                   self.tokenizer('\n' + target, add_special_tokens=False).input_ids + \
+                   self.tokenizer(self.tokenizer.eos_token, add_special_tokens=False).input_ids
+
+        else:  # prefix mode
+            # user_msg is "... [input] [TEST_INJECTED_PROMPT]"
+            # Split off the injected prompt suffix so we can insert adv tokens before it.
+            # We use rsplit with maxsplit=1 to handle the case where TEST_INJECTED_PROMPT
+            # might appear elsewhere in the instruction.
+            from config import TEST_INJECTED_PROMPT
+            injected = TEST_INJECTED_PROMPT.capitalize()
+            if injected in user_msg:
+                input_before, _ = user_msg.rsplit(injected, 1)
+                input_before = input_before.rstrip(' ')
+            else:
+                # Fallback: treat entire user_msg as the pre-injection part
+                input_before = user_msg
+
+            # Temporarily update the conv message to just input_before so
+            # get_prompt() gives us the header up to that point.
+            self.conv_template.update_last_message(input_before)
+            header_ids = self.tokenizer(self.conv_template.get_prompt()).input_ids
+
+            adv_ids       = self.tokenizer(adv_suffix, add_special_tokens=False).input_ids
+            space_ids     = self.tokenizer(' ', add_special_tokens=False).input_ids
+            injected_ids  = self.tokenizer(injected, add_special_tokens=False).input_ids
+
+            # optim_slice: right after header_ids
+            optim_start = len(header_ids)
+            optim_stop  = optim_start + len(adv_ids)
+            optim_slice = slice(optim_start, optim_stop)
+
+            toks = header_ids + adv_ids + space_ids + injected_ids + self.sep_tokens
+
+            asst_ids = self.tokenizer(self.conv_template.roles[1], add_special_tokens=False).input_ids
+            nl_ids   = self.tokenizer('\n', add_special_tokens=False).input_ids
+            toks_with_asst = toks + asst_ids + nl_ids
+            assistant_role_slice = slice(len(toks), len(toks_with_asst))
+            toks = toks_with_asst
+
+            eos_ids    = self.tokenizer(self.tokenizer.eos_token, add_special_tokens=False).input_ids
+            target_ids = self.tokenizer('\n' + target, add_special_tokens=False).input_ids
+            toks = toks + target_ids + eos_ids
 
         target_slice = slice(assistant_role_slice.stop, len(toks) - self.num_tok_sep2)
         loss_slice = slice(assistant_role_slice.stop - 1, len(toks) - self.num_tok_sep2 - 1)

@@ -4,7 +4,7 @@ from typing import Tuple, List, Dict
 from testing.test import load_full_model, test_model_output, recursive_filter
 import argparse
 import json
-from config import PROMPT_FORMAT
+from config import PROMPT_FORMAT, DELIMITERS, DEFAULT_SYSTEM_PROMPT
 import os
 from tqdm import tqdm
 
@@ -27,6 +27,15 @@ if __name__ == "__main__":
 
     model, tokenizer, frontend_delimiters, training_attacks = load_full_model(args.model_name_or_path,
                                                                               customized_model_class=args.customized_model_class)
+    delm = DELIMITERS[frontend_delimiters]
+    fmt = dict(PROMPT_FORMAT[frontend_delimiters])
+    if len(delm) == 4:
+        fmt['prompt_input_tool'] = (
+                delm[0] + DEFAULT_SYSTEM_PROMPT + "\n\n"
+                + delm[1] + "\n{instruction}\n\n"
+                + delm[2] + "\n{input}\n\n"
+                + delm[3] + "\n"
+        )
 
     model_path = args.model_name_or_path
     log_path = f"{model_path}-log" if not os.path.exists(model_path) else model_path
@@ -56,7 +65,7 @@ if __name__ == "__main__":
 
         # First prompt with probe in data
         prompt = data_point["prompt"]
-        clean_prompt        = format_prompt(prompt, PROMPT_FORMAT[frontend_delimiters])
+        clean_prompt        = format_prompt(prompt, fmt)
         print(clean_prompt)
         _, _, _, clean_out = test_model_output([clean_prompt],
                                                   model,

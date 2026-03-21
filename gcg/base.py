@@ -21,7 +21,7 @@ from gcg.eval_input import EvalInput, LengthMismatchError
 from gcg.model import TransformersModel
 from gcg.types import BatchTokenIds
 from gcg.utils import Message, SuffixManager
-from data_generation.struq import compute_expert_labels
+from data_generation.data_loader import compute_expert_labels
 logger = logging.getLogger(__name__)
 
 

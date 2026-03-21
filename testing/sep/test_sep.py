@@ -4,7 +4,7 @@ from typing import Tuple, List, Dict
 from testing.test import load_full_model, test_model_output, recursive_filter, apply_testtime_defense
 import argparse
 import json
-from config import PROMPT_FORMAT
+from config import PROMPT_FORMAT, DEFAULT_SYSTEM_PROMPT
 import os
 from tqdm import tqdm
 from difflib import SequenceMatcher
@@ -128,6 +128,17 @@ if __name__ == "__main__":
     model, tokenizer, frontend_delimiters, training_attacks = load_full_model(args.model_name_or_path,
                                                                               customized_model_class=args.customized_model_class)
 
+    delm = DELIMITERS[frontend_delimiters] if isinstance(frontend_delimiters, list) else DELIMITERS[frontend_delimiters]
+    fmt = dict(PROMPT_FORMAT[frontend_delimiters])
+    if len(delm) == 4:
+        fmt['prompt_input_tool'] = (
+                delm[0] + DEFAULT_SYSTEM_PROMPT + "\n\n"
+                + delm[1] + "\n{instruction}\n\n"
+                + delm[2] + "\n{input}\n\n"
+                + delm[3] + "\n"
+        )
+
+    # Then pass fmt instead of PROMPT_FORMAT[frontend_delimiters] to format_prompt
     with open(args.data_path, 'r') as f:
         dataset = json.load(f)
 
@@ -167,7 +178,7 @@ if __name__ == "__main__":
             # First prompt with probe in data
             data_with_prob        = format_prompt(
                 data_point,
-                PROMPT_FORMAT[frontend_delimiters],
+                fmt,
                 mode='data_with_probe',
                 attack=a,
                 defense=args.defense
@@ -175,7 +186,8 @@ if __name__ == "__main__":
 
             # Second prompt with probe in task
             instruction_with_prob = format_prompt(
-                data_point, PROMPT_FORMAT[frontend_delimiters],
+                data_point,
+                fmt,
                 mode='probe_with_task',
                 attack="none",
                 defense=args.defense

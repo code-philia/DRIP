@@ -1,7 +1,7 @@
 import transformers
 from transformers import Trainer
 from transformers.utils import logging
-from data_generation.struq import make_supervised_data_module
+from data_generation.data_loader import make_supervised_data_module
 from peft import LoraConfig, get_peft_model
 from transformers.trainer import PreTrainedModel, is_sagemaker_mp_enabled, Adafactor, is_bitsandbytes_available
 from typing import Optional, Tuple, Any, List
@@ -211,7 +211,7 @@ class DPOTrainerOurs(DPOTrainer):
         # Make sure to move the loss to the device the original accumulating loss is at back in the `Trainer` class:
         loss = loss.to(self.args.device)
         # self.store_metrics(metrics, train_eval="train")
-        loss = loss.detach().clone().to(torch.float32)
+        loss = loss.to(torch.float32)
         if return_outputs:
             return loss, metrics
 

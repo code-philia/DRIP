@@ -8,6 +8,8 @@ DEFAULT_TOKENS      = {'pad_token': '[PAD]', 'eos_token': '</s>', 'bos_token': '
 TEXTUAL_DELM_TOKENS = ['instruction', 'input',  'response', '###',    ':']
 SPECIAL_DELM_TOKENS = ['[INST]', '[INPT]', '[RESP]', '[MARK]', '[COLN]']
 FILTERED_TOKENS     = SPECIAL_DELM_TOKENS + ['##']
+
+DEFAULT_SYSTEM_PROMPT = "You are a helpful, respectful and honest assistant."
 OTHER_DELM_TOKENS   = {
                         'mark': ['{s}', '|{s}|', '<{s}>', '[{s}]', '<|{s}|>', '[|{s}|]', '<[{s}]>', '\'\'\'{s}\'\'\'', '***{s}***'],
                         'inst': ['Command', 'Rule', 'Prompt', 'Task'],
@@ -21,42 +23,74 @@ OTHER_DELM_FOR_TEST = 2
 DELIMITERS = {
     "TextTextText": ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
                      '<|eot_id|><|start_header_id|>user<|end_header_id|>',
+                     '<|eot_id|><|start_header_id|>ipython<|end_header_id|>',
                      '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
-    "TextTextTextMistral": ['<s>[INST] <<SYS>>', ' <</SYS>>', '[/INST]'],
-    "TextTextTextQwen": ['<|im_start|>system', '<|im_end|><|im_start|>user', '<|im_end|><|im_start|>assistant'],
-    "SpclSpclSpcl": [SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[0] + SPECIAL_DELM_TOKENS[4],
-                     SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[1] + SPECIAL_DELM_TOKENS[4],
-                     SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[2] + SPECIAL_DELM_TOKENS[4]],
-    "Mistral-7B-Instruct-v0.3-log": ['<s>[INST] <<SYS>>', ' <</SYS>>', '[/INST]'],
-    "Meta-Llama-3-8B-Instruct-log":
-        ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>', 
+    "Meta-SecAlign-8B-merged":
+        ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
          '<|eot_id|><|start_header_id|>user<|end_header_id|>',
+         '<|eot_id|><|start_header_id|>input<|end_header_id|>',
+         '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
+    "Meta-Llama-3-8B-Instruct-log":
+        ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
+         '<|eot_id|><|start_header_id|>user<|end_header_id|>',
+         '<|eot_id|><|start_header_id|>ipython<|end_header_id|>',
          '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
     "Llama-3.1-8B-Instruct-log":
         ['<|begin_of_text|><|start_header_id|>system<|end_header_id|>',
          '<|eot_id|><|start_header_id|>user<|end_header_id|>',
+         '<|eot_id|><|start_header_id|>ipython<|end_header_id|>',
          '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
-    "Meta-SecAlign-8B-merged":
-        ['<|begin_of_text|><|start_header_id|>user<|end_header_id|>',
-         '<|eot_id|><|start_header_id|>input<|end_header_id|>',
-         '<|eot_id|><|start_header_id|>assistant<|end_header_id|>'],
-    "Qwen2.5-7B-Instruct-log":
-        ['<|im_start|>system',
-         '<|im_end|><|im_start|>user',
-         '<|im_end|><|im_start|>assistant'],
-    "Qwen3-4B-Instruct-2507-log":
-        ['<|im_start|>system',
-         '<|im_end|><|im_start|>user',
-         '<|im_end|><|im_start|>assistant'],
+
+
+    "TextTextTextQwen": ['<|im_start|>system',
+        '<|im_end|><|im_start|>user',
+        '<|im_end|><|im_start|>tool',
+        '<|im_end|><|im_start|>assistant',],
+    "Qwen2.5-7B-Instruct-log": ['<|im_start|>system',
+        '<|im_end|><|im_start|>user',
+        '<|im_end|><|im_start|>tool',
+        '<|im_end|><|im_start|>assistant',],
+    "Qwen3-4B-Instruct-2507-log":['<|im_start|>system',
+        '<|im_end|><|im_start|>user',
+        '<|im_end|><|im_start|>tool',
+        '<|im_end|><|im_start|>assistant',],
+
+    "TextTextTextMistral": ['<s>[INST] <<SYS>>',
+                            ' <</SYS>>',
+                            "[TOOL_RESULTS]", '[/TOOL_RESULTS] [/INST]'],
+
+    "SpclSpclSpcl": [SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[0] + SPECIAL_DELM_TOKENS[4],
+                     SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[1] + SPECIAL_DELM_TOKENS[4],
+                     SPECIAL_DELM_TOKENS[3] + ' ' + SPECIAL_DELM_TOKENS[2] + SPECIAL_DELM_TOKENS[4]],
+    "Mistral-7B-Instruct-v0.3-log": ['<s>[INST] <<SYS>>',
+                                     ' <</SYS>>',
+                                     "[TOOL_RESULTS]",
+                                     '[/TOOL_RESULTS] [/INST]'],
+
+
 }
 
 PROMPT_FORMAT = {}
 for name, delm in DELIMITERS.items():
-    sys_input = ''
-    sys_no_input = ''
     PROMPT_FORMAT[name] = {}
-    PROMPT_FORMAT[name]["prompt_input"]    = sys_input    + delm[0] + "\n{instruction}\n\n" + delm[1] + "\n{input}\n\n" + delm[2] + "\n"
-    PROMPT_FORMAT[name]["prompt_no_input"] = sys_no_input + delm[0] + "\n{instruction}\n\n" + delm[2] + "\n"
+    if len(delm) == 4:
+        # 4-role (Llama ipython): system | user_instruction | ipython/data | assistant
+        PROMPT_FORMAT[name]["prompt_input"] = (
+            delm[0] + "\n" + DEFAULT_SYSTEM_PROMPT + "\n\n"
+            + delm[1] + "\n{instruction}\n\n"
+            + delm[2] + "\n{input}\n\n"
+            + delm[3] + "\n"
+        )
+        PROMPT_FORMAT[name]["prompt_no_input"] = (
+            delm[0] + "\n" + DEFAULT_SYSTEM_PROMPT + "\n\n"
+            + delm[1] + "\n{instruction}\n\n"
+            + delm[3] + "\n"
+        )
+    else:
+        # 3-role (existing behaviour — also covers Mistral/Qwen TextSys variants
+        # where instruction goes in system slot and input goes in user slot)
+        PROMPT_FORMAT[name]["prompt_input"]    = delm[0] + "\n{instruction}\n\n" + delm[1] + "\n{input}\n\n" + delm[2] + "\n"
+        PROMPT_FORMAT[name]["prompt_no_input"] = delm[0] + "\n{instruction}\n\n" + delm[2] + "\n"
 
 TEST_INJECTED_WORDS = ['Hacked', 'Hello World', 'Serendipity', 'Xylophone']
 # TEST_INJECTED_WORD = "pwned"       # fixme rare

@@ -7,11 +7,12 @@ from config import (
     TEST_INJECTED_PROMPT,
     TEST_INJECTED_WORD,
     DEFAULT_TOKENS,
-    SPECIAL_DELM_TOKENS
+    SPECIAL_DELM_TOKENS,
+DEFAULT_SYSTEM_PROMPT
 )
 import dataclasses
 import torch
-from data_generation.struq import jload, _tokenize_fn, smart_tokenizer_and_embedding_resize
+from data_generation.data_loader import jload, _tokenize_fn, smart_tokenizer_and_embedding_resize
 import os
 import argparse
 from copy import deepcopy
@@ -154,7 +155,7 @@ def gcg(d_item, attack, cfg, data_delm):
     try:
         adv_suffix = attack.run(
             messages=[
-                Message(Role.SYSTEM, ""),
+                Message(Role.SYSTEM, DEFAULT_SYSTEM_PROMPT),
                 Message(Role.USER, prompt_no_sys)
             ],
             target=TEST_INJECTED_WORD.lower()
@@ -164,6 +165,46 @@ def gcg(d_item, attack, cfg, data_delm):
     d_item["input"] += ' ' + TEST_INJECTED_PROMPT.capitalize() + ' ' + adv_suffix
     torch.cuda.empty_cache()
     return d_item
+
+def gcg_prefix(d_item, attack, cfg, data_delm):
+    """GCG attack that optimises tokens placed just BEFORE TEST_INJECTED_PROMPT.
+
+    During optimisation the full injection context is present so the adv tokens
+    are learned in the correct semantic context:
+
+        … [input] [TEST_INJECTED_PROMPT] [adv_tokens]   <- optimisation prompt
+                                                            (adv_tokens = suffix here)
+
+    At eval time the adv tokens are moved to just before TEST_INJECTED_PROMPT:
+
+        … [input] [adv_tokens] [TEST_INJECTED_PROMPT]   <- eval prompt
+    """
+    d_item = {**d_item}  # shallow copy — avoid mutating the caller's dict
+    cfg.sample_id = d_item["id"]
+    attack._setup_log_file(cfg)
+
+    # Include TEST_INJECTED_PROMPT in the optimisation prompt so the adv tokens
+    # are trained in the full injection context (suffix position during training).
+    prompt_no_sys = (
+        f"{d_item['instruction']}\n\n{data_delm}\n{d_item['input']}"
+        f" {TEST_INJECTED_PROMPT.capitalize()}"
+    )
+    try:
+        adv_prefix = attack.run(
+            messages=[
+                Message(Role.SYSTEM, ""),
+                Message(Role.USER, prompt_no_sys)
+            ],
+            target=TEST_INJECTED_WORD.lower()
+        ).best_suffix
+    except LengthMismatchError:
+        adv_prefix = cfg.adv_suffix_init
+
+    # At eval time: insert adv tokens BEFORE TEST_INJECTED_PROMPT
+    d_item["input"] += ' ' + adv_prefix + ' ' + TEST_INJECTED_PROMPT.capitalize()
+    torch.cuda.empty_cache()
+    return d_item
+
 
 
 def setup_gcg_configs(args):
@@ -193,7 +234,7 @@ def setup_gcg_configs(args):
     cfg.sample_id = -1 # to be initialized in every run of the sample
     cfg.pass_expert_labels = args.pass_expert_labels
     cfg.delm_ids = (args.inst_seperator, args.data_seperator, args.response_seperator)
-    cfg.num_labels = 3
+    cfg.num_labels = len(delm)
     cfg.add_attention_loss = (args.attack == "attngcg")
     cfg.attention_loss_lambda = 100
     cfg.add_bypass_loss = (args.attack == "bypass")
@@ -208,7 +249,6 @@ def test_model_output(
     llm_inputs,
     model,
     tokenizer,
-    frontend_delimiters,
     print_results: bool = False,
 ):
     max_new_tokens = 512
@@ -266,33 +306,48 @@ def test_model_output(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='Testing a model with a specific attack')
     parser.add_argument('-m', '--model_name_or_path', type=str, nargs="+")
-    parser.add_argument('-a', '--attack', type=str, default='gcg', choices=["gcg", "attngcg", "bypass", "cancel"])
+    parser.add_argument('-a', '--attack', type=str, default='gcg',
+                        choices=["gcg", "gcg_prefix", "attngcg", "bypass", "cancel"])
     parser.add_argument('--bypass_loss_lambda', type=float, default=10)
     parser.add_argument('--cancel_loss_lambda', type=float, default=10)
     parser.add_argument('-d', '--defense', type=str, default='none',
                         choices=['none', 'sandwich', 'instructional', 'reminder', 'isolation', 'incontext'],
                         help='Baseline test-time zero-shot prompting defense')
     parser.add_argument('--data_path', type=str, default='datasets/davinci_003_outputs.json')
+    parser.add_argument('--pass_expert_labels', default=False,
+                        help="Whether to past expert labels instruction/data as an input", action='store_true')
     parser.add_argument('--customized_model_class', type=str, help="Customized model class", default='')
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
 
     # fixme: test on SEP
-    dataset = jload("./datasets/SEP_dataset.json")
-    data = [{"instruction": x["system_prompt_clean"],
-      "input": x["prompt_clean"]} for x in dataset][:100]
-
+    # dataset = jload("./datasets/SEP_dataset.json")
+    # data = [{"instruction": x["system_prompt_clean"],
+    #   "input": x["prompt_clean"]} for x in dataset][:100]
+    data = [d for d in jload(args.data_path) if d["input"] != ""]
 
     model, tokenizer, frontend_delimiters, training_attacks = load_full_model(args.model_name_or_path,
                                                                               customized_model_class=args.customized_model_class)
 
-    prompt_format = PROMPT_FORMAT[frontend_delimiters]
     model_path = args.model_name_or_path
-    log_path = f"{model_path}-log" if not os.path.exists(model_path) else model_path
-    summary_path = os.path.join(log_path, "summary.tsv")
+    log_path = f"{model_path}-log/" if not os.path.exists(model_path) else model_path
+    summary_path = os.path.join(log_path, f"{args.attack}_summary.tsv")
 
-    prompt_template = PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
-    inst_delm, data_delm, resp_delm = DELIMITERS[frontend_delimiters]
+    delm = DELIMITERS[frontend_delimiters]
+    inst_delm = delm[1] if len(delm) == 4 else delm[0]
+    data_delm = delm[2] if len(delm) == 4 else delm[1]
+    resp_delm = delm[-1]
+    # 2. prompt_template
+    fmt = dict(PROMPT_FORMAT[frontend_delimiters])
+    if len(delm) == 4:
+        fmt['prompt_input_tool'] = (
+                delm[0] + DEFAULT_SYSTEM_PROMPT + "\n\n"
+                + delm[1] + "\n{instruction}\n\n"
+                + delm[2] + "\n{input}\n\n"
+                + delm[-1] + "\n"
+        )
+    prompt_template = fmt['prompt_input_tool'] if len(delm) == 4 else fmt['prompt_input']
+
     args.inst_seperator = tokenizer(inst_delm,
                                    return_tensors="pt",
                                    padding=False,
@@ -323,6 +378,7 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             use_system_instructions=False,
             conv_template=fastchat.conversation.get_conv_template("struq"),
+            mode="prefix" if args.attack == "gcg_prefix" else "suffix",
         )
     elif "llama" in model_path:
         fastchat.conversation.register_conv_template(
@@ -338,6 +394,7 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             use_system_instructions=False,
             conv_template=fastchat.conversation.get_conv_template("llama3"),
+            mode="prefix" if args.attack == "gcg_prefix" else "suffix",
         )
     elif "mistral" in model_path:
         fastchat.conversation.register_conv_template(
@@ -353,6 +410,7 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             use_system_instructions=False,
             conv_template=fastchat.conversation.get_conv_template("mistral03"),
+            mode="prefix" if args.attack == "gcg_prefix" else "suffix",
         )
     elif "qwen" in model_path:
         fastchat.conversation.register_conv_template(
@@ -368,16 +426,24 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             use_system_instructions=False,
             conv_template=fastchat.conversation.get_conv_template("qwen2"),
+            mode="prefix" if args.attack == "gcg_prefix" else "suffix",
         )
 
     cfg    = setup_gcg_configs(args)
 
     def eval_func(adv_suffix, messages):
         inst, data = messages[1].content.split(f'\n\n{data_delm}\n')
+        # Strip the TEST_INJECTED_PROMPT that was appended during optimisation,
+        # then reconstruct with adv tokens in the correct position.
+        data_clean = data.rsplit(' ' + TEST_INJECTED_PROMPT.capitalize(), 1)[0]
+        if args.attack == "gcg_prefix":
+            injected_data = data_clean + ' ' + adv_suffix + ' ' + TEST_INJECTED_PROMPT.capitalize()
+        else:
+            injected_data = data_clean + ' ' + TEST_INJECTED_PROMPT.capitalize() + ' ' + adv_suffix
         return test_model_output([
             prompt_template.format_map({
                 "instruction": inst,
-                "input": data + ' ' + adv_suffix
+                "input": injected_data,  # was: data + ' ' + adv_suffix (wrong in suffix mode)
             })
         ],
             model,
@@ -407,27 +473,30 @@ if __name__ == "__main__":
 
     # 2. Determine Resume State
     start_index = 0
-    file_mode = "w"
+    file_mode = "a"
 
-    if os.path.exists(attack_log_file):
-        with open(attack_log_file, "r", encoding="utf-8") as f:
-            # Count non-empty lines to determine how many samples are done
-            # Subtract 1 for the header
-            lines = [line for line in f if line.strip()]
-            if len(lines) > 0:
-                # Subtract 1 for the header row to get number of completed data rows
-                completed = len(lines) - 1
-                if completed > 0:
-                    start_index = completed
-                    file_mode = "a"  # Append mode
-                    print(f"Resuming from index {start_index} (found {start_index} completed samples).")
-                else:
-                    # Only header present, start fresh in append mode
-                    file_mode = "a"
+    # if os.path.exists(attack_log_file):
+    #     with open(attack_log_file, "r", encoding="utf-8") as f:
+    #         # Count non-empty lines to determine how many samples are done
+    #         # Subtract 1 for the header
+    #         lines = [line for line in f if line.strip()]
+    #         if len(lines) > 0:
+    #             # Subtract 1 for the header row to get number of completed data rows
+    #             completed = len(lines) - 1
+    #             if completed > 0:
+    #                 start_index = completed
+    #                 file_mode = "a"  # Append mode
+    #                 print(f"Resuming from index {start_index} (found {start_index} completed samples).")
+    #             else:
+    #                 # Only header present, start fresh in append mode
+    #                 file_mode = "a"
 
     in_response = 0
     begin_with = 0
     total = 0
+
+    # Select attack function
+    attack_fn = gcg_prefix if args.attack == "gcg_prefix" else gcg
 
     # 3. Main Attack Loop
     # Use 'initial' in tqdm to show correct progress bar state
@@ -447,9 +516,8 @@ if __name__ == "__main__":
             d_item = deepcopy(d)
             d_item["id"] = i
 
-            # gcg attack
-            new_d_item  = gcg(d_item, attack, cfg, data_delm)
-            attacked_str = prompt_format['prompt_input'].format_map(new_d_item)
+            new_d_item = attack_fn(d_item, attack, cfg, data_delm)
+            attacked_str = prompt_template.format_map(new_d_item)
 
             (
                 sample_in_response,

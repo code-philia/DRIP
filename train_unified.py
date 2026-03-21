@@ -3,6 +3,7 @@ import sys
 import argparse
 from typing import Optional, List, Dict, Any
 import transformers
+from config import DELIMITERS
 from transformers.utils import logging
 from peft import LoraConfig, get_peft_model
 from datasets import load_dataset
@@ -10,17 +11,14 @@ from trl import DPOTrainer
 
 from training.trainer import DPOTrainerOurs, SFTTrainerOurs, SFTTrainerISE, DPOArgsInstFuse, \
     ModelArguments, DataArguments, TrainingArguments, AttackArguments, DPOArgsSecAlign
-from data_generation.dpo import make_dpo_data_module
-from data_generation.struq import make_supervised_data_module, \
+from data_generation.dpo_data_loader import make_dpo_data_module
+from data_generation.data_loader import make_supervised_data_module, \
     make_supervised_data_module_orig, \
     smart_tokenizer_and_embedding_resize
 
-from modeling.llama_instfuse import (
+from modeling.llama_drip import (
     LlamaFuseConfig,
-    LlamaForCausalLMFuse,
-    LlamaForCausalLMNoFuse,
-    LlamaForCausalLMConcatFuse,
-    LlamaForCausalLMEmbeddingShift,
+    LlamaForCausalLMFuse,set_delimiter_ids_in_config
 )
 
 from modeling import (
@@ -60,12 +58,12 @@ os.environ.setdefault("WANDB_WATCH", "all")
 def pick_llama_model(arch: str):
     if arch == "fuse":
         return LlamaFuseConfig, LlamaForCausalLMFuse
-    if arch == "nofuse":
-        return LlamaFuseConfig, LlamaForCausalLMNoFuse
-    if arch == "concatfuse":
-        return LlamaFuseConfig, LlamaForCausalLMConcatFuse
-    if arch == "embeddingshift":
-        return LlamaFuseConfig, LlamaForCausalLMEmbeddingShift
+    # if arch == "nofuse":
+    #     return LlamaFuseConfig, LlamaForCausalLMNoFuse
+    # if arch == "concatfuse":
+    #     return LlamaFuseConfig, LlamaForCausalLMConcatFuse
+    # if arch == "embeddingshift":
+    #     return LlamaFuseConfig, LlamaForCausalLMEmbeddingShift
     if arch == "ise":
         return LlamaMoEConfig, LlamaForCausalLMMoE
     if arch == "possep":
@@ -112,7 +110,6 @@ def build_lora_config(objective: str, arch: str) -> LoraConfig:
         bias="none",
         task_type="CAUSAL_LM",
         target_modules="all-linear",
-        exclude_modules=modules,
         modules_to_save=modules
     )
 
@@ -154,6 +151,33 @@ def main(argv: Optional[List[str]] = None):
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
+
+    # ------------------
+    # Data module
+    # ------------------
+    frontend_delimiters = (data_args.attack or "").split("_")[0] if getattr(data_args, "attack", None) else ""
+    if known.objective == "dpo":
+        data_module = make_dpo_data_module(tokenizer=tokenizer,
+                                           data_args=data_args,
+                                           frontend_delimiters=frontend_delimiters)
+    elif known.objective == "secalign_dpo":
+        train_dataset = load_dataset('json', data_files=data_args.data_path_list, split="train")
+        data_module = {"train_dataset": train_dataset, "eval_dataset": None}
+    elif known.objective == "sft":
+        data_module = make_supervised_data_module(tokenizer=tokenizer,
+                                                  data_args=data_args,
+                                                  frontend_delimiters=frontend_delimiters,
+                                                  downsample=getattr(training_args, "downsample", False))
+        if not getattr(training_args, "downsample", True) and getattr(training_args, "lr_scale", True):
+            training_args.learning_rate /= data_module["train_dataset"].data_copy_count
+    else:  # struq_sft
+        data_module = make_supervised_data_module_orig(tokenizer=tokenizer,
+                                                       data_args=data_args,
+                                                       frontend_delimiters=frontend_delimiters,
+                                                       downsample=getattr(training_args, "downsample", False))
+        if not getattr(training_args, "downsample", True) and getattr(training_args, "lr_scale", True):
+            training_args.learning_rate /= data_module["train_dataset"].data_copy_count
+
     # ------------------
     # Create model
     # ------------------
@@ -184,6 +208,17 @@ def main(argv: Optional[List[str]] = None):
             raise ValueError(f"Unsupported model-family: {known.model_family}")
 
         config = Cfg.from_pretrained(model_args.model_name_or_path)
+        num_labels = len(DELIMITERS[frontend_delimiters])
+        if num_labels == 4:
+            set_delimiter_ids_in_config(config, tokenizer,
+                                        inst_delm=DELIMITERS[frontend_delimiters][1],
+                                        data_delm=DELIMITERS[frontend_delimiters][2],
+                                        response_delm=DELIMITERS[frontend_delimiters][3])
+        else:
+            set_delimiter_ids_in_config(config, tokenizer,
+                                        inst_delm=DELIMITERS[frontend_delimiters][0],
+                                        data_delm=DELIMITERS[frontend_delimiters][1],
+                                        response_delm=DELIMITERS[frontend_delimiters][-1])
         model = Model.from_pretrained(
             model_args.model_name_or_path,
             ignore_mismatched_sizes=True,
@@ -193,38 +228,11 @@ def main(argv: Optional[List[str]] = None):
     # Optional window attribute
     if hasattr(model_args, "window_size") and getattr(model_args, "window_size", 0) > 0 and hasattr(model.config, "window"):
         model.config.window = model_args.window_size
-
     # ------------------
     # LoRA
     # ------------------
     lora_config = build_lora_config(known.objective, known.arch)
     model = get_peft_model(model, lora_config)
-
-    # ------------------
-    # Data module
-    # ------------------
-    frontend_delimiters = (data_args.attack or "").split("_")[0] if getattr(data_args, "attack", None) else ""
-    if known.objective == "dpo":
-        data_module = make_dpo_data_module(tokenizer=tokenizer,
-                                           data_args=data_args,
-                                           frontend_delimiters=frontend_delimiters)
-    elif known.objective == "secalign_dpo":
-        train_dataset = load_dataset('json', data_files=data_args.data_path_list, split="train")
-        data_module = {"train_dataset": train_dataset, "eval_dataset": None}
-    elif known.objective == "sft":
-        data_module = make_supervised_data_module(tokenizer=tokenizer,
-                                                  data_args=data_args,
-                                                  frontend_delimiters=frontend_delimiters,
-                                                  downsample=getattr(training_args, "downsample", False))
-        if not getattr(training_args, "downsample", True) and getattr(training_args, "lr_scale", True):
-            training_args.learning_rate /= data_module["train_dataset"].data_copy_count
-    else:  # struq_sft
-        data_module = make_supervised_data_module_orig(tokenizer=tokenizer,
-                                                       data_args=data_args,
-                                                       frontend_delimiters=frontend_delimiters,
-                                                       downsample=getattr(training_args, "downsample", False))
-        if not getattr(training_args, "downsample", True) and getattr(training_args, "lr_scale", True):
-            training_args.learning_rate /= data_module["train_dataset"].data_copy_count
 
     # ------------------
     # Trainer selection

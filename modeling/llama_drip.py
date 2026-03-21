@@ -28,6 +28,18 @@ def _get_last_indices(label_index: int, expert_labels: torch.LongTensor) -> torc
     last_indices = masked_indices.max(dim=1)[0]  # (B,)
     return last_indices  # may contain -1
 
+def _get_first_indices(label_index: int, expert_labels: torch.LongTensor) -> torch.LongTensor:
+    batch_size, seq_len = expert_labels.shape
+    mask = (expert_labels == label_index)
+    seq_indices = torch.arange(seq_len, device=expert_labels.device).unsqueeze(0)
+    all_max = torch.full_like(seq_indices, seq_len)  # sentinel: positions not matching get seq_len
+    masked_indices = torch.where(mask, seq_indices, all_max)
+    first_indices = masked_indices.min(dim=1)[0]  # (B,)
+    # Replace sentinel with -1 for "not found"
+    first_indices = torch.where(first_indices == seq_len,
+                                torch.full_like(first_indices, -1),
+                                first_indices)
+    return first_indices
 
 def _find_first_occurrence(seq: torch.LongTensor, separator: torch.LongTensor) -> int:
     """Return the start index of the first occurrence of `separator` in `seq`, or -1."""
@@ -53,7 +65,7 @@ def _compute_expert_labels_from_input_ids(
     data_delm_ids: List[int],
     response_delm_ids: List[int],
     inst_delm_ids: Optional[List[int]] = None,
-    num_labels: int = 3,
+    num_labels: int = 4,
 ) -> torch.LongTensor:
     """
     Compute expert_labels on-the-fly from input_ids, replicating
@@ -125,7 +137,7 @@ def _compute_expert_labels_from_input_ids(
 class LlamaFuseConfig(LlamaConfig):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.num_experts   = kwargs.get('num_experts', 3)
+        self.num_experts   = kwargs.get('num_experts', 4)
         self.residual      = kwargs.get('residual', True)
         self.bit_flip      = kwargs.get('bit_flip', True)
         # Delimiter token IDs stored as plain int lists so they serialise
@@ -134,7 +146,10 @@ class LlamaFuseConfig(LlamaConfig):
         self.data_delm_ids     = kwargs.get('data_delm_ids', None)      # List[int]
         self.response_delm_ids = kwargs.get('response_delm_ids', None)  # List[int]
         self.inst_delm_ids     = kwargs.get('inst_delm_ids', None)      # List[int] | None
-        self.num_labels        = kwargs.get('num_labels', 3)
+        self.num_labels        = kwargs.get('num_labels', 4)
+        self.instruct_label    = kwargs.get('instruct_label',  0 if self.num_labels == 3 else 1)
+        self.data_label        = kwargs.get('data_label',      1 if self.num_labels == 3 else 2)
+        self.response_label    = kwargs.get('response_label',  self.num_labels - 1)
 
 
 def set_delimiter_ids_in_config(
@@ -143,7 +158,7 @@ def set_delimiter_ids_in_config(
     inst_delm: str,
     data_delm: str,
     response_delm: str,
-    num_labels: int = 3,
+    num_labels: int = 4,
 ) -> None:
     """
     Helper: encode delimiter strings and store them in `config` so the model
@@ -159,6 +174,9 @@ def set_delimiter_ids_in_config(
     config.response_delm_ids = encode(response_delm)
     config.inst_delm_ids     = encode(inst_delm)
     config.num_labels        = num_labels
+    config.instruct_label    = 0 if num_labels == 3 else 1
+    config.data_label        = 1 if num_labels == 3 else 2
+    config.response_label    = num_labels - 1
 
 
 @dataclass
@@ -176,8 +194,8 @@ class LlamaModel(transformers.LlamaModel):
         self.layers = nn.ModuleList(
             [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.instruct_label  = 0
-        self.data_label = 1
+        self.instruct_label  = config.instruct_label
+        self.data_label      = config.data_label
         self.residual_weight = nn.Parameter(torch.tensor([-1.0986])) # 0.5 weight assigned to the last instruction token
         self.shift_tap = torch.nn.Identity()  # <— dummy tap point
         self.post_init()
@@ -319,8 +337,8 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
         self.vocab_size      = config.vocab_size
         self.hidden_size     = config.hidden_size
         self.residual_weight = nn.Parameter(torch.tensor([0.0])) # 0.5 weight assigned to the last instruction token
-        self.response_label  = 2
-        self.instruct_label  = 0
+        self.response_label  = config.response_label
+        self.instruct_label  = config.instruct_label
         self.final_tap = torch.nn.Identity()  # <— dummy tap point
         self.post_init()
 
@@ -383,7 +401,11 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
 
                     past_inst_hidden_states = last_inst.clone().detach()
 
-                end_indices = _get_last_indices(self.response_label, expert_labels) # (B,)
+                # First token of response region
+                first_resp_indices = _get_first_indices(self.response_label, expert_labels)
+                # Last token of the response delimiter = first + (delimiter_length - 1)
+                resp_delm_len = len(self.config.response_delm_ids)  # stored in config
+                end_indices = (first_resp_indices + resp_delm_len - 1).clamp(max=expert_labels.shape[1] - 1)
                 end_state   = hidden_states[batch_idx, end_indices]  # (B, H)
 
                 # Add last instruction token's semantic as a residual connection to the 1st response token
@@ -470,4 +492,3 @@ class LlamaForCausalLMFuse(transformers.LlamaForCausalLM):
         if hasattr(outputs, "past_inst_hidden_states"):
             model_kwargs["past_inst_hidden_states"] = outputs.past_inst_hidden_states # cache the last instruction token hidden state
         return model_kwargs
-

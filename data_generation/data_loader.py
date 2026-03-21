@@ -20,12 +20,14 @@ from typing import List
 from transformers import PreTrainedTokenizerBase
 from datasets import Dataset as HFDataset
 
+
 def jload(f, mode="r"):
     if not isinstance(f, io.IOBase):
         f = open(f, mode=mode)
     jdict = json.load(f)
     f.close()
     return jdict
+
 
 def jdump(obj, f, mode="w", indent=4, default=str):
     if not isinstance(f, io.IOBase):
@@ -38,27 +40,29 @@ def jdump(obj, f, mode="w", indent=4, default=str):
         raise ValueError(f"Unexpected type: {type(obj)}")
     f.close()
 
+
 def format_with_other_delimiters(text, test=False):
     test_idx = - OTHER_DELM_FOR_TEST
-    mark = np.random.choice(OTHER_DELM_TOKENS['mark'][test_idx:] if test else OTHER_DELM_TOKENS['mark'][:test_idx]) + ':'
-    
+    mark = np.random.choice(
+        OTHER_DELM_TOKENS['mark'][test_idx:] if test else OTHER_DELM_TOKENS['mark'][:test_idx]) + ':'
+
     def sample_delm(delm_name):
         role_name = 'user' if (delm_name == 'inst' or delm_name == 'inpt') else 'asst'
-        if test: 
-            role = np.random.choice(OTHER_DELM_TOKENS[role_name][test_idx:]) 
+        if test:
+            role = np.random.choice(OTHER_DELM_TOKENS[role_name][test_idx:])
             delm = np.random.choice(OTHER_DELM_TOKENS[delm_name][test_idx:])
-        else:    
-            role = np.random.choice(OTHER_DELM_TOKENS[role_name][:test_idx]) 
+        else:
+            role = np.random.choice(OTHER_DELM_TOKENS[role_name][:test_idx])
             delm = np.random.choice(OTHER_DELM_TOKENS[delm_name][:test_idx])
-        
+
         p = np.random.rand()
-        if p < 1/3:
+        if p < 1 / 3:
             return (role + delm).upper()
-        elif p < 2/3:
+        elif p < 2 / 3:
             return (role + delm).lower()
         else:
             return role + delm
-    
+
     for delm in DELIMITERS.values():
         if '' in delm or ' ' in delm: continue
         text = text.replace(delm[0], mark.format(s=sample_delm('inst')))
@@ -66,13 +70,13 @@ def format_with_other_delimiters(text, test=False):
         text = text.replace(delm[2], mark.format(s=sample_delm('resp')))
     return text
 
-def generate_training_data(data_dicts, prompt_dict_name, attack, frontend_delimiters, tokenizer):
 
+def generate_training_data(data_dicts, prompt_dict_name, attack, frontend_delimiters, tokenizer):
     prompt_dict = PROMPT_FORMAT[prompt_dict_name]
 
     if attack == 'None':
         return [prompt_dict["prompt_input"].format_map(example) for example in data_dicts], \
-               [f"{example['output']}{tokenizer.eos_token}" for example in data_dicts]
+            [f"{example['output']}{tokenizer.eos_token}" for example in data_dicts]
 
     if attack == 'Completion':
         ref_inst_resp = {}
@@ -86,35 +90,38 @@ def generate_training_data(data_dicts, prompt_dict_name, attack, frontend_delimi
             sources.append(prompt_dict["prompt_input"].format_map(data_dicts[i]))
         else:
             # randomly choose another instruction from the same dataset
-            injected_sample = deepcopy(np.random.choice(data_dicts)) 
+            injected_sample = deepcopy(np.random.choice(data_dicts))
             injected_sample['instruction'] = injected_sample['instruction']
-            if injected_sample['instruction'][-1] == '?': 
+            if injected_sample['instruction'][-1] == '?':
                 injected_prompt = 'answer the following question. ' + \
                                   injected_sample['instruction'] + ' ' + \
                                   injected_sample['input']
-            else: 
+            else:
                 injected_prompt = injected_sample['instruction'][0].lower() + \
                                   injected_sample['instruction'][1:] + ' ' + \
                                   injected_sample['input']
-            
+
             data_dicts_item = deepcopy(data_dicts[i])
             if data_dicts_item['input'][-1] != '.': data_dicts_item['input'] += '.'
             if attack == 'Naive':
                 data_dicts_item['input'] += ' ' + injected_prompt[0].upper() + injected_prompt[1:]
             elif attack == 'Ignore':
-                data_dicts_item['input'] += ' ' + np.random.choice(IGNORE_ATTACK_SENTENCES['train']) + ' ' + injected_prompt
+                data_dicts_item['input'] += ' ' + np.random.choice(
+                    IGNORE_ATTACK_SENTENCES['train']) + ' ' + injected_prompt
             elif attack == 'Completion':
+                _delm = DELIMITERS[frontend_delimiters]
                 data_dicts_item['input'] += '\n\n' + \
-                                            DELIMITERS[frontend_delimiters][2] \
+                                            _delm[-1] \
                                             + '\n' + \
-                                            ref_inst_resp.get(data_dicts_item['instruction'], data_dicts_item['output']) + \
+                                            ref_inst_resp.get(data_dicts_item['instruction'],
+                                                              data_dicts_item['output']) + \
                                             '\n\n' + \
-                                             DELIMITERS[frontend_delimiters][0] + \
+                                            _delm[0] + \
                                             '\n' + \
                                             injected_prompt.capitalize()
                 if injected_sample['input'] != '':
                     data_dicts_item['input'] += '\n\n' + \
-                                                DELIMITERS[frontend_delimiters][1] + \
+                                                _delm[-2] + \
                                                 '\n' + \
                                                 injected_sample['input']
                 data_dicts_item['input'] = format_with_other_delimiters(data_dicts_item['input'], test=False)
@@ -133,6 +140,7 @@ def find_first_occurrence(seq, separator):
             return i  # Return the ENDING index of the first match
     return -1  # Return -1 if separator is not found
 
+
 def find_last_occurrence(seq, separator):
     last_index = -1
     for i in range(len(seq) - len(separator) + 1):
@@ -140,7 +148,8 @@ def find_last_occurrence(seq, separator):
             last_index = i  # Update to the ENDING index of this match
     return last_index  # Return -1 if the separator is not found, or the last match index if found
 
-def compute_expert_labels(seq, user_inst_seperator, data_seperator, response_seperator, num_labels:int=3):
+
+def compute_expert_labels(seq, user_inst_seperator, data_seperator, response_seperator, num_labels: int = 3):
     expert_this = torch.zeros(len(seq), dtype=torch.long)  # Default: system instruction (0)
 
     if num_labels == 3:
@@ -171,7 +180,8 @@ def compute_expert_labels(seq, user_inst_seperator, data_seperator, response_sep
     return expert_this
 
 
-def _tokenize_fn(strings, tokenizer, add_special_tokens=True):
+def _tokenize_fn(strings, tokenizer, add_special_tokens=True,
+                 compute_gate=False, frontend_delimiters=None):
     tokenizer.model_max_length = 131072
     tokenized_list = [
         tokenizer(
@@ -191,27 +201,48 @@ def _tokenize_fn(strings, tokenizer, add_special_tokens=True):
     ]
     labels_lens = input_ids_lens
 
-    return dict(
+    result = dict(
         input_ids=input_ids,
         labels=labels,
         input_ids_lens=input_ids_lens,
         labels_lens=labels_lens,
     )
 
-def preprocess(sources, targets, frontend_delimiters, tokenizer):
+    if compute_gate and frontend_delimiters is not None:
+        delm = DELIMITERS[frontend_delimiters]
+        num_labels = 4 if len(delm) == 4 else 3
+        inst_sep = torch.tensor(tokenizer(delm[0], add_special_tokens=False).input_ids, dtype=torch.long)
+        data_sep = torch.tensor(tokenizer(delm[1], add_special_tokens=False).input_ids, dtype=torch.long)
+        resp_sep = torch.tensor(tokenizer(delm[-1], add_special_tokens=False).input_ids, dtype=torch.long)
+        # For 4-role: delm[1]=user_delm, delm[2]=tool_delm, delm[3]=resp_delm
+        # compute_expert_labels uses user_inst_separator=delm[0 or 1], data_sep=delm[1 or 2]
+        if num_labels == 4:
+            user_sep = torch.tensor(tokenizer(delm[1], add_special_tokens=False).input_ids, dtype=torch.long)
+            data_sep = torch.tensor(tokenizer(delm[2], add_special_tokens=False).input_ids, dtype=torch.long)
+            resp_sep = torch.tensor(tokenizer(delm[3], add_special_tokens=False).input_ids, dtype=torch.long)
+        else:
+            user_sep = inst_sep  # unused in 3-label mode
+        result["expert_labels"] = [
+            compute_expert_labels(ids, user_sep, data_sep, resp_sep, num_labels=num_labels)
+            for ids in input_ids
+        ]
 
+    return result
+
+
+def preprocess(sources, targets, frontend_delimiters, tokenizer):
     examples = [s + t for s, t in zip(sources, targets)]
 
     # input + responses
     examples_tokenized = _tokenize_fn(examples, tokenizer)
-    input_ids     = examples_tokenized["input_ids"]
+    input_ids = examples_tokenized["input_ids"]
 
     # input only => find the input length
     sources_lengths = _tokenize_fn(sources, tokenizer)["input_ids_lens"]
 
     labels = deepcopy(input_ids)
     for label, source_len in zip(labels, sources_lengths):
-        label[:source_len] = IGNORE_INDEX # ignore the prompt part, only interested in predicting responses
+        label[:source_len] = IGNORE_INDEX  # ignore the prompt part, only interested in predicting responses
 
     return dict(input_ids=input_ids,
                 labels=labels)
@@ -232,7 +263,8 @@ class SupervisedDataset(Dataset):
 
             list_data_dict = jload(data_path)
 
-            source_clean, targets_clean = generate_training_data(list_data_dict, prompt_dict_name, 'None', frontend_delimiters, tokenizer)
+            source_clean, targets_clean = generate_training_data(list_data_dict, prompt_dict_name, 'None',
+                                                                 frontend_delimiters, tokenizer)
 
             if attacks == 'None':
                 sources, targets = source_clean, targets_clean
@@ -244,7 +276,8 @@ class SupervisedDataset(Dataset):
                 self.data_copy_count = len(attacks) + len(attacks) * downsample
 
                 for a in attacks:
-                    source, target = generate_training_data(list_data_dict, prompt_dict_name, a, frontend_delimiters, tokenizer)
+                    source, target = generate_training_data(list_data_dict, prompt_dict_name, a, frontend_delimiters,
+                                                            tokenizer)
                     sources += source
                     targets += target
                     if downsample:
@@ -288,7 +321,6 @@ class SupervisedDataset(Dataset):
                     labels=self.labels[i])
 
 
-
 @dataclass
 class DataCollatorForSupervisedDatasetOrig(object):
     """Collate examples for supervised fine-tuning."""
@@ -311,6 +343,7 @@ class DataCollatorForSupervisedDatasetOrig(object):
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
 
+
 @dataclass
 class DataCollatorForSupervisedDataset(object):
     """Collate examples for supervised fine-tuning."""
@@ -319,7 +352,7 @@ class DataCollatorForSupervisedDataset(object):
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         input_ids, labels = tuple([instance[key] for instance in instances]
-                                                 for key in ("input_ids", "labels"))
+                                  for key in ("input_ids", "labels"))
 
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
@@ -335,18 +368,18 @@ class DataCollatorForSupervisedDataset(object):
         )
 
 
-
 def get_embedding_indices(tokenizer):
     init_values = [tokenizer.encode(v, add_special_tokens=False)[0]
-                   for v in TEXTUAL_DELM_TOKENS] # get the delimiters tokens IDs
+                   for v in TEXTUAL_DELM_TOKENS]  # get the delimiters tokens IDs
     ignore_values = [i for i in range(len(tokenizer))
-                     if tokenizer.decode(i) == "#"] # get the padding token ID
+                     if tokenizer.decode(i) == "#"]  # get the padding token ID
     return init_values, ignore_values
 
+
 def smart_tokenizer_and_embedding_resize(
-    special_tokens_dict: Dict,
-    tokenizer: transformers.PreTrainedTokenizer,
-    model: transformers.PreTrainedModel
+        special_tokens_dict: Dict,
+        tokenizer: transformers.PreTrainedTokenizer,
+        model: transformers.PreTrainedModel
 ):
     """Resize tokenizer and embedding.
 
@@ -355,7 +388,8 @@ def smart_tokenizer_and_embedding_resize(
     num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
     model.resize_token_embeddings(len(tokenizer))
 
-    REAL_DELIMITERS_INIT_EMBD_IND, _ = get_embedding_indices(tokenizer) # get embeddings for ['instruction', 'input',  'response', '###',  ':']
+    REAL_DELIMITERS_INIT_EMBD_IND, _ = get_embedding_indices(
+        tokenizer)  # get embeddings for ['instruction', 'input',  'response', '###',  ':']
 
     if num_new_tokens > 0:
         input_embeddings = model.get_input_embeddings().weight.data
@@ -364,15 +398,17 @@ def smart_tokenizer_and_embedding_resize(
         input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
         output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
 
-        input_embeddings[-num_new_tokens] = input_embeddings_avg # pad token's embedding is initialized to be average
+        input_embeddings[-num_new_tokens] = input_embeddings_avg  # pad token's embedding is initialized to be average
         output_embeddings[-num_new_tokens] = output_embeddings_avg
 
         ## let ['[INST]', '[INPT]', '[RESP]', '[MARK]', '[COLN]'] = ['instruction', 'input',  'response', '###', ':']
         for i in range(len(SPECIAL_DELM_TOKENS)):
-            input_embeddings[-num_new_tokens+i+1]  = input_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
-            output_embeddings[-num_new_tokens+i+1] = output_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
+            input_embeddings[-num_new_tokens + i + 1] = input_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
+            output_embeddings[-num_new_tokens + i + 1] = output_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
 
-def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters, downsample=True
+
+def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters,
+                                downsample=True
                                 ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = SupervisedDataset(tokenizer=tokenizer,
@@ -385,7 +421,9 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
                 eval_dataset=None,
                 data_collator=data_collator)
 
-def make_supervised_data_module_orig(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters, downsample=True
+
+def make_supervised_data_module_orig(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters,
+                                     downsample=True
                                      ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = SupervisedDataset(tokenizer=tokenizer,
@@ -397,4 +435,3 @@ def make_supervised_data_module_orig(tokenizer: transformers.PreTrainedTokenizer
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
                 data_collator=data_collator)
-

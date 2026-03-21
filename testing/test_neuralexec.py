@@ -1,12 +1,11 @@
-
 import argparse
-from config import PROMPT_FORMAT, TEST_INJECTED_WORD
+from config import PROMPT_FORMAT, TEST_INJECTED_WORD, DEFAULT_SYSTEM_PROMPT
 import os
 from testing.test import load_full_model, recursive_filter, test_model_output
 from attacks import *
 from copy import deepcopy
 from functools import partial
-from data_generation.struq import _tokenize_fn, jload, jdump, smart_tokenizer_and_embedding_resize
+from data_generation.data_loader import _tokenize_fn, jload, jdump, smart_tokenizer_and_embedding_resize
 from typing import Dict, Tuple
 
 TRIGGER: Dict[str, Tuple[str, str]] = {
@@ -61,7 +60,12 @@ TRIGGER: Dict[str, Tuple[str, str]] = {
 }
 
 def form_llm_input(data, mapped_triggers, fmt, apply_filter, sample_ids=None):
+    """Build LLM inputs supporting both 3-role and 4-role prompt formats.
 
+    For 4-role models the untrusted injected input goes in the data/tool slot
+    (prompt_input_tool). For 3-role models the original prompt_input is used.
+    """
+    use_4role = "prompt_input_tool" in fmt
     llm_input = []
 
     for i, d in enumerate(data):
@@ -80,7 +84,10 @@ def form_llm_input(data, mapped_triggers, fmt, apply_filter, sample_ids=None):
         if apply_filter:
             x['input'] = recursive_filter(x['input'])
 
-        llm_input.append(fmt['prompt_input'].format_map(x))
+        if use_4role:
+            llm_input.append(fmt['prompt_input_tool'].format_map(x))
+        else:
+            llm_input.append(fmt['prompt_input'].format_map(x))
 
     return llm_input
 
@@ -99,17 +106,28 @@ if __name__ == "__main__":
         frontend_delimiters, \
         training_attacks = load_full_model(args.model_name_or_path, customized_model_class=args.customized_model_class)
 
-    prompt_format = PROMPT_FORMAT[frontend_delimiters]
     model_path = args.model_name_or_path
     log_path = f"{model_path}-log" if not os.path.exists(model_path) else model_path
     attack_log_file = os.path.join(log_path, f"neuralexec.csv")
+
+    # Build fmt with prompt_input_tool for 4-role models
+    from config import DELIMITERS
+    delm = DELIMITERS[frontend_delimiters]
+    fmt = dict(PROMPT_FORMAT[frontend_delimiters])
+    if len(delm) == 4:
+        fmt['prompt_input_tool'] = (
+            delm[0] + DEFAULT_SYSTEM_PROMPT + "\n\n"
+            + delm[1] + "\n{instruction}\n\n"
+            + delm[2] + "\n{input}\n\n"
+            + delm[3] + "\n"
+        )
 
     data = jload(args.data_path)
 
     llm_input = form_llm_input(
         data,
         mapped_triggers=TRIGGER[args.trigger_name],
-        fmt=PROMPT_FORMAT[frontend_delimiters],
+        fmt=fmt,
         apply_filter=False,
     )
 
