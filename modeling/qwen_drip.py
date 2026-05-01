@@ -1,27 +1,31 @@
 import transformers
 import torch
-from transformers import Qwen3Config
+from transformers import Qwen3Config, Qwen3MoeConfig
 from modeling.llama_drip import (
     _get_last_indices,
-    _compute_expert_labels_from_input_ids,
-    CausalLMFuseOutputWithPast,
+    compute_expert_labels_from_input_ids,
     set_delimiter_ids_in_config,
     _get_first_indices,
 )
 from transformers.utils import logging
 from typing import Union, Optional, List, Dict, Any
 from torch import nn
-from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
+from transformers.modeling_outputs import MoeModelOutputWithPast, MoeCausalLMOutputWithPast
+from transformers.models.qwen3_moe.modeling_qwen3_moe import load_balancing_loss_func
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.masking_utils import create_causal_mask
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 import inspect
+from dataclasses import dataclass
 
 logger = logging.get_logger(__name__)
 
+@dataclass
+class CausalLMMoEFuseOutputWithPast(MoeCausalLMOutputWithPast):
+    past_inst_hidden_states: Optional[torch.FloatTensor] = None
 
-class Qwen3FuseConfig(Qwen3Config):
+class Qwen3FuseConfig(Qwen3MoeConfig):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.num_experts       = kwargs.get('num_experts', 4)
@@ -36,8 +40,8 @@ class Qwen3FuseConfig(Qwen3Config):
         self.response_label    = kwargs.get('response_label',  self.num_labels - 1)
 
 
-class Qwen3Model(transformers.Qwen3Model):
-    def __init__(self, config: Qwen3Config):
+class Qwen3Model(transformers.Qwen3MoeModel):
+    def __init__(self, config: Qwen3FuseConfig):
         super().__init__(config)
         self.config = config
         self.deinstruction_shift = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
@@ -46,6 +50,8 @@ class Qwen3Model(transformers.Qwen3Model):
         self.data_label      = config.data_label
         self.residual_weight = nn.Parameter(torch.tensor([-1.0986]))
         self.shift_tap       = torch.nn.Identity()
+        self.post_init()
+
         self.post_init()
 
     def _has_delimiter_config(self) -> bool:
@@ -60,7 +66,7 @@ class Qwen3Model(transformers.Qwen3Model):
     ) -> Optional[torch.LongTensor]:
         if input_ids is None or not self._has_delimiter_config():
             return None
-        return _compute_expert_labels_from_input_ids(
+        return compute_expert_labels_from_input_ids(
             input_ids=input_ids,
             data_delm_ids=self.config.data_delm_ids,
             response_delm_ids=self.config.response_delm_ids,
@@ -79,31 +85,29 @@ class Qwen3Model(transformers.Qwen3Model):
         cache_position: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPast:
+    ) -> MoeModelOutputWithPast:
         output_attentions = kwargs.get("output_attentions", False)
 
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
-
-        if isinstance(past_key_values, (list, tuple)):
-            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache()
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
 
         if cache_position is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
-
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = create_causal_mask(
+        mask_function = create_causal_mask if self.config.sliding_window is None else create_sliding_window_causal_mask
+
+        causal_mask = mask_function(
             config=self.config,
             input_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -112,7 +116,10 @@ class Qwen3Model(transformers.Qwen3Model):
             position_ids=position_ids,
         )
 
+
         hidden_states = inputs_embeds
+
+        # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
         all_self_attns = [] if output_attentions else None
 
@@ -152,15 +159,18 @@ class Qwen3Model(transformers.Qwen3Model):
                 )
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(
+
+        return MoeModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
+            hidden_states=hidden_states,
             attentions=tuple(all_self_attns) if output_attentions else None,
         )
 
 
-class Qwen3ModelEmbeddingShift(transformers.Qwen3Model):
-    def __init__(self, config: Qwen3Config):
+
+class Qwen3ModelEmbeddingShift(transformers.Qwen3MoeModel):
+    def __init__(self, config: Qwen3MoeConfig):
         super().__init__(config)
         self.config = config
         self.deinstruction_shift = nn.Embedding(config.num_experts, config.hidden_size)
@@ -186,7 +196,7 @@ class Qwen3ModelEmbeddingShift(transformers.Qwen3Model):
     ) -> Optional[torch.LongTensor]:
         if input_ids is None or not self._has_delimiter_config():
             return None
-        return _compute_expert_labels_from_input_ids(
+        return compute_expert_labels_from_input_ids(
             input_ids=input_ids,
             data_delm_ids=self.config.data_delm_ids,
             response_delm_ids=self.config.response_delm_ids,
@@ -205,7 +215,7 @@ class Qwen3ModelEmbeddingShift(transformers.Qwen3Model):
         cache_position: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPast:
+    ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -263,13 +273,14 @@ class Qwen3ModelEmbeddingShift(transformers.Qwen3Model):
             )
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(
+        return MoeModelOutputWithPast(
             last_hidden_state=hidden_states,
+            hidden_states=hidden_states,
             past_key_values=past_key_values,
         )
 
 
-class Qwen3ForCausalLMFuse(transformers.Qwen3ForCausalLM):
+class Qwen3ForCausalLMFuse(transformers.Qwen3MoeForCausalLM):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config: Qwen3FuseConfig):
@@ -282,6 +293,7 @@ class Qwen3ForCausalLMFuse(transformers.Qwen3ForCausalLM):
         self.response_label  = config.response_label
         self.instruct_label  = config.instruct_label
         self.final_tap       = torch.nn.Identity()
+
         self.post_init()
 
     def forward(
@@ -295,16 +307,21 @@ class Qwen3ForCausalLMFuse(transformers.Qwen3ForCausalLM):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
+        output_router_logits: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> CausalLMFuseOutputWithPast:
+    ) -> CausalLMMoEFuseOutputWithPast:
 
         # Auto-compute only if not explicitly provided (GCG provides explicitly)
         if expert_labels is None and self.model._has_delimiter_config() and input_ids is not None:
             expert_labels = self.model._auto_expert_labels(input_ids)
 
-        outputs: BaseModelOutputWithPast = self.model(
+        output_router_logits = (
+            output_router_logits if output_router_logits is not None else self.config.output_router_logits
+        )
+
+        outputs: MoeModelOutputWithPast = self.model(
             input_ids=input_ids,
             expert_labels=expert_labels,
             attention_mask=attention_mask,
@@ -312,6 +329,7 @@ class Qwen3ForCausalLMFuse(transformers.Qwen3ForCausalLM):
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
+            output_router_logits=output_router_logits,
             cache_position=cache_position,
             **kwargs,
         )
@@ -356,21 +374,35 @@ class Qwen3ForCausalLMFuse(transformers.Qwen3ForCausalLM):
                 fused_states = fused_states.unsqueeze(1).expand(-1, length, -1) # expand mixed_states (B, H) → (B, L, H)
                 hidden_states = torch.where(mask3d, fused_states, hidden_states)
 
-        hidden_states = hidden_states.to(self.lm_head.weight.dtype)
+        hidden_states = outputs.last_hidden_state
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
 
-        return CausalLMFuseOutputWithPast(
+        aux_loss = None
+        if output_router_logits:
+            aux_loss = load_balancing_loss_func(
+                outputs.router_logits,
+                self.num_experts,
+                self.num_experts_per_tok,
+                attention_mask,
+            )
+            if labels is not None:
+                loss += self.router_aux_loss_coef * aux_loss.to(loss.device)  # make sure to reside in the same device
+
+        return CausalLMMoEFuseOutputWithPast(
             loss=loss,
+            aux_loss=aux_loss,
             logits=logits,
             past_inst_hidden_states=past_inst_hidden_states,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            router_logits=outputs.router_logits,
         )
 
     def prepare_inputs_for_generation(
@@ -411,7 +443,7 @@ class Qwen3ForCausalLMFuse(transformers.Qwen3ForCausalLM):
 
     def _update_model_kwargs_for_generation(
         self,
-        outputs: ModelOutput,
+        outputs: CausalLMMoEFuseOutputWithPast,
         model_kwargs: Dict[str, Any],
         is_encoder_decoder: bool = False,
         standardize_cache_format: bool = False,

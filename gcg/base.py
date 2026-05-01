@@ -21,7 +21,7 @@ from gcg.eval_input import EvalInput, LengthMismatchError
 from gcg.model import TransformersModel
 from gcg.types import BatchTokenIds
 from gcg.utils import Message, SuffixManager
-from data_generation.data_loader import compute_expert_labels
+from data_generation.data_loader import compute_expert_labels_from_input_ids
 logger = logging.getLogger(__name__)
 
 
@@ -319,12 +319,14 @@ class BaseAttack:
             self._on_step_begin()
 
             dynamic_input_ids = self._suffix_manager.get_input_ids(messages, adv_suffix, target)[0]
-            expert_labels = compute_expert_labels(dynamic_input_ids,
-                                                  user_inst_seperator=self.delm_ids[0],
-                                                  data_seperator=self.delm_ids[1],
-                                                  response_seperator=self.delm_ids[2],
-                                                  num_labels=self.num_labels)
 
+            expert_labels = compute_expert_labels_from_input_ids(
+                dynamic_input_ids.unsqueeze(0),
+                data_delm_ids=self.delm_ids[1].tolist(),
+                response_delm_ids=self.delm_ids[2].tolist(),
+                inst_delm_ids=self.delm_ids[0].tolist(),
+                num_labels=self.num_labels
+            ).squeeze(0)
             dynamic_input_ids = dynamic_input_ids[num_fixed_tokens:]
             expert_labels     = expert_labels[num_fixed_tokens:]
             dynamic_input_ids = dynamic_input_ids.to("cuda")

@@ -199,7 +199,8 @@ class TransformersModel:
     def set_prefix_cache(self, messages: list[Message]) -> None:
         prefix_cache, num_fixed_tokens = get_prefix_cache(
             self.suffix_manager,
-            self.model, self.tokenizer,
+            self.model,
+            self.tokenizer,
             messages,
             self.pass_expert_labels,
             self.delm_ids[0], self.delm_ids[1], self.delm_ids[2],

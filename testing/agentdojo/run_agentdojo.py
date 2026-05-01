@@ -1,55 +1,36 @@
-#!/usr/bin/env python3
-"""
-Run AgentDojo benchmarks for LlamaForCausalLMFuse (or any fuse-model variant).
 
-Basic usage
------------
-# Utility only (no attack), banking suite:
-python run_agentdojo.py \
-    --model-path meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-instfuse-sep-none-newdata-dpo \
-    --model-class LlamaForCausalLMFuse \
-    --suites banking
-
-# Under important_instructions attack, all suites:
-python run_agentdojo.py \
-    --model-path meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-instfuse-sep-none-newdata-dpo \
-    --model-class LlamaForCausalLMFuse \
-    --attack important_instructions \
-    --suites banking slack travel workspace
-
-# Compare ours vs SecAlign baseline (no custom class):
-python run_agentdojo.py \
-    --model-path meta-llama/Meta-SecAlign-8B-merged \
-    --model-class "" \
-    --attack important_instructions \
-    --suites banking
-"""
+from __future__ import annotations
 
 import argparse
 import json
 import logging
 import sys
-from collections import defaultdict
+import warnings
 from pathlib import Path
+from typing import Optional
 
-# ── Project imports ─────────────────────────────────────────────────────────
+import torch
+from dotenv import load_dotenv
+
+# ---- Project imports -------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fuse_llm import build_fuse_pipeline
-
+# ---- agentdojo imports (mirror official benchmark.py) ----------------------
+from agentdojo.agent_pipeline.agent_pipeline import (
+    DEFENSES,
+    AgentPipeline,
+    PipelineConfig,
+)
 from agentdojo.attacks.attack_registry import ATTACKS, load_attack
 from agentdojo.benchmark import (
     SuiteResults,
-    TaskResults,
+    benchmark_suite_with_injections,
     benchmark_suite_without_injections,
 )
 from agentdojo.logging import OutputLogger
+from agentdojo.models import ModelsEnum
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.task_suite.task_suite import TaskSuite
-from agentdojo.base_tasks import BaseUserTask, BaseInjectionTask
-from agentdojo.functions_runtime import FunctionCall  # noqa: F401
-
-TaskResults.model_rebuild()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,185 +42,278 @@ logger = logging.getLogger(__name__)
 ALL_SUITES = ["banking", "slack", "travel", "workspace"]
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Manual injection benchmark
-# ════════════════════════════════════════════════════════════════════════════
-
-def benchmark_suite_manual_injections(
-    pipeline,
+# ============================================================================
+# benchmark_suite — direct migration of upstream benchmark.py::benchmark_suite.
+# Identical to upstream except `pipeline` is supplied directly (already built).
+# ============================================================================
+def benchmark_suite(
     suite: TaskSuite,
-    attacker,
-    user_tasks: list[str] | None = None,
-    injection_tasks: list[str] | None = None,
-    verbose: bool = True,
+    pipeline: AgentPipeline,
+    logdir: Path,
+    force_rerun: bool,
+    benchmark_version: str,
+    user_tasks: tuple[str, ...] = (),
+    injection_tasks: tuple[str, ...] = (),
+    attack: Optional[str] = None,
+    defense: Optional[str] = None,
 ) -> SuiteResults:
-    """
-    Drop-in replacement for benchmark_suite_with_injections that manually
-    builds injections and calls suite.run_task_with_pipeline directly.
+    if not load_dotenv(".env"):
+        warnings.warn("No .env file found")
 
-    This bypasses benchmark_suite_with_injections entirely so we can verify
-    exactly what injection strings reach the environment.
-    """
-    utility_results:   dict[tuple[str, str], bool] = {}
-    security_results:  dict[tuple[str, str], bool] = {}
-    inj_utility_results: dict[str, bool] = {}
+    print(f"Running benchmark for suite: '{suite.name}'")
+    print(f"Using pipeline: '{pipeline.name}'")
+    if attack is not None:
+        print(f"Using attack: '{attack}'")
+    if defense is not None:
+        print(f"Using defense: '{defense}'")
+    if len(user_tasks) > 0:
+        print(f"Using user tasks: {', '.join(user_tasks)}")
 
-    # Filter tasks if requested
-    all_user_tasks = suite.user_tasks
-    all_inj_tasks  = suite.injection_tasks
-
-    selected_user_tasks = (
-        {k: v for k, v in all_user_tasks.items() if k in user_tasks}
-        if user_tasks else all_user_tasks
-    )
-    selected_inj_tasks = (
-        {k: v for k, v in all_inj_tasks.items() if k in injection_tasks}
-        if injection_tasks else all_inj_tasks
-    )
-
-    # Check injection task utility once with ground-truth pipeline
-    # (mirrors what benchmark_suite_with_injections does internally)
-    from agentdojo.agent_pipeline.ground_truth_pipeline import GroundTruthPipeline
-    for inj_task_id, inj_task in selected_inj_tasks.items():
-        gt_pipeline = GroundTruthPipeline(inj_task)
-        _, inj_util = suite.run_task_with_pipeline(
-            agent_pipeline=gt_pipeline,
-            user_task=next(iter(selected_user_tasks.values())),
-            injection_task=inj_task,
-            injections={},
-        )
-        inj_utility_results[inj_task_id] = inj_util
-
-    n_total = len(selected_user_tasks) * len(selected_inj_tasks)
-    n_done  = 0
-
-    for user_task_id, user_task in selected_user_tasks.items():
-        for inj_task_id, inj_task in selected_inj_tasks.items():
-            n_done += 1
-
-            # ── Build injection strings ──────────────────────────────────
-            injections = attacker.attack(user_task, inj_task)
-
-            # ── Diagnostic: verify injections survive into the environment
-            env_check = suite.load_and_inject_default_environment(injections)
-            env_str   = str(env_check.model_dump())
-            for vec_key, vec_val in injections.items():
-                snippet = vec_val[:60].replace('\n', '\\n')
-                found   = vec_val[:40] in env_str
-                logger.debug(
-                    "  env-check [%s]: in_env=%s  snippet=%s",
-                    vec_key, found, repr(snippet),
-                )
-                if not found:
-                    logger.warning(
-                        "INJECTION NOT IN ENV — vector '%s' did not survive "
-                        "load_and_inject_default_environment. "
-                        "Snippet: %s", vec_key, repr(snippet),
-                    )
-
-            # ── Run the task ─────────────────────────────────────────────
-            if verbose:
-                logger.info(
-                    "[%d/%d] %s × %s | vectors: %s",
-                    n_done, n_total, user_task_id, inj_task_id, list(injections.keys()),
-                )
-
-            utility, security = suite.run_task_with_pipeline(
-                agent_pipeline=pipeline,
-                user_task=user_task,
-                injection_task=inj_task,
-                injections=injections,
+    with OutputLogger(str(logdir)):
+        if attack is None:
+            results = benchmark_suite_without_injections(
+                pipeline,
+                suite,
+                user_tasks=user_tasks if len(user_tasks) != 0 else None,
+                logdir=logdir,
+                force_rerun=force_rerun,
+                benchmark_version=benchmark_version,
+            )
+        else:
+            attacker_ = load_attack(attack, suite, pipeline)
+            results = benchmark_suite_with_injections(
+                pipeline,
+                suite,
+                attacker_,
+                user_tasks=user_tasks if len(user_tasks) != 0 else None,
+                injection_tasks=injection_tasks if len(injection_tasks) != 0 else None,
+                logdir=logdir,
+                force_rerun=force_rerun,
+                benchmark_version=benchmark_version,
             )
 
-            utility_results[(user_task_id, inj_task_id)]  = utility
-            security_results[(user_task_id, inj_task_id)] = security
+    print(f"Finished benchmark for suite: '{suite.name}'")
+    return results
 
-            if verbose:
-                logger.info(
-                    "  → utility=%s  security(injection_succeeded)=%s",
-                    utility, security,
-                )
 
-    return SuiteResults(
-        utility_results=utility_results,
-        security_results=security_results,
-        injection_tasks_utility_results=inj_utility_results,
+# ============================================================================
+# show_results — direct migration of upstream benchmark.py::show_results.
+# ============================================================================
+def show_results(
+    suite_name: str, results: SuiteResults, show_security_results: bool
+) -> None:
+    utility_results = list(results["utility_results"].values())
+    avg_utility = (
+        sum(utility_results) / len(utility_results) if utility_results else 0.0
     )
+    print(f"Results for suite {suite_name}")
+    print(f"Average utility: {avg_utility * 100:.2f}%")
 
+    if show_security_results:
+        passed = sum(results["injection_tasks_utility_results"].values())
+        total = len(results["injection_tasks_utility_results"])
+        print(f"\nPassed injection tasks as user tasks: {passed}/{total}")
 
-# ════════════════════════════════════════════════════════════════════════════
-# Results display
-# ════════════════════════════════════════════════════════════════════════════
-
-def show_results(suite_name: str, results: SuiteResults, with_attack: bool) -> None:
-    util_vals = list(results["utility_results"].values())
-    avg_util  = sum(util_vals) / len(util_vals) if util_vals else 0.0
-    print(f"\n{'=' * 55}")
-    print(f"Suite: {suite_name}")
-    print(f"  Utility  : {avg_util * 100:.1f}%  ({sum(util_vals)}/{len(util_vals)})")
-
-    if with_attack:
-        sec_vals = list(results["security_results"].values())
-        avg_sec  = sum(sec_vals) / len(sec_vals) if sec_vals else 0.0
-        # security=True means injection did NOT succeed (model was secure)
-        print(f"  Security : {avg_sec * 100:.1f}%  ({sum(sec_vals)}/{len(sec_vals)})")
-
-        inj_vals = results.get("injection_tasks_utility_results", {})
-        if inj_vals:
-            n_pass = sum(inj_vals.values())
-            print(f"  Injection task utility: {n_pass}/{len(inj_vals)}")
-    print(f"{'=' * 55}")
+        security_results = list(results["security_results"].values())
+        avg_security = (
+            sum(security_results) / len(security_results) if security_results else 0.0
+        )
+        print(f"Average security: {avg_security * 100:.2f}%")
 
 
 def save_summary(
     all_results: dict[str, SuiteResults],
-    model_name:  str,
-    attack:      str | None,
+    pipeline_name: str,
+    mode: str,
+    attack: Optional[str],
+    defense: Optional[str],
     output_path: Path,
 ) -> None:
-    summary = {}
+    summary: dict[str, dict] = {}
     for suite_name, results in all_results.items():
         util_vals = list(results["utility_results"].values())
-        sec_vals  = list(results["security_results"].values())
+        sec_vals = list(results["security_results"].values())
         summary[suite_name] = {
-            "utility":  sum(util_vals) / len(util_vals) if util_vals else None,
-            "security": sum(sec_vals)  / len(sec_vals)  if sec_vals  else None,
-            "n_pairs":  len(util_vals),
+            "utility": sum(util_vals) / len(util_vals) if util_vals else None,
+            "security": sum(sec_vals) / len(sec_vals) if sec_vals else None,
+            "n_pairs": len(util_vals),
         }
-    out = {"model": model_name, "attack": attack, "results": summary}
+    out = {
+        "pipeline": pipeline_name,
+        "mode": mode,
+        "attack": attack,
+        "defense": defense,
+        "results": summary,
+    }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(out, indent=2))
     logger.info("Summary saved to %s", output_path)
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# CLI
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# Pipeline construction
+# ============================================================================
+def build_official_pipeline(args: argparse.Namespace) -> AgentPipeline:
+    try:
+        llm = ModelsEnum(args.model_name_or_path)
+    except ValueError as e:
+        valid = [m.value for m in ModelsEnum]
+        raise SystemExit(
+            f"--mode official requires --model_name_or_path to be a value in "
+            f"agentdojo.models.ModelsEnum.\n"
+            f"Got: {args.model_name_or_path!r}\n"
+            f"Valid values: {valid}\n"
+            f"For local HF models, start a vLLM server first and pass the "
+            f"served name (see Meta-SecAlign test_agentdojo.py for the recipe)."
+        ) from e
 
+    pipeline = AgentPipeline.from_config(
+        PipelineConfig(
+            llm=llm,
+            defense=args.defense,
+            system_message_name=args.system_message_name,
+            system_message=args.system_message,
+            tool_output_format=args.tool_output_format,
+        )
+    )
+    pipeline.name = args.model_name or args.model_name_or_path
+    return pipeline
+
+
+def build_fuse_pipeline_from_args(args: argparse.Namespace) -> AgentPipeline:
+    """Build our custom 4-role / expert-labels pipeline."""
+    from fuse_llm import build_fuse_pipeline
+
+    torch_dtype = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }[args.dtype]
+
+    if args.defense is not None:
+        warnings.warn(
+            "--defense is ignored in mode=fuse: the fuse pipeline does not "
+            "implement agentdojo defenses. Drop --defense or switch to mode=official."
+        )
+    if args.tool_output_format is not None:
+        warnings.warn(
+            "--tool-output-format is ignored in mode=fuse."
+        )
+    if args.system_message_name is not None:
+        warnings.warn(
+            "--system-message-name is ignored in mode=fuse "
+            "(only --system-message is honoured)."
+        )
+
+    display_name = args.model_name or f"local/{args.model_name_or_path}"
+    pipeline = build_fuse_pipeline(
+        model_path=args.model_name_or_path,
+        customized_model_class=args.customized_model_class or None,
+        model_name=display_name,
+        system_message=args.system_message or "",
+        torch_dtype=torch_dtype,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        pass_expert_labels=not args.no_expert_labels,
+        max_iters=args.max_iters,
+    )
+    pipeline.name = display_name
+    return pipeline
+
+
+# ============================================================================
+# CLI
+# ============================================================================
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Benchmark LlamaForCausalLMFuse (or variants) on AgentDojo.",
+        description="Benchmark on AgentDojo. Two modes: fuse (custom 4-role "
+        "pipeline for our trained models) or official (upstream "
+        "AgentPipeline.from_config, for GPT/Claude/Gemini or vLLM-served local).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument('-m', '--model_name_or_path', type=str, nargs="+")
-    p.add_argument('--customized_model_class', type=str, default='')
-    p.add_argument("--model-name", default=None)
-    p.add_argument("--no-expert-labels", action="store_true")
-    p.add_argument("--dtype", default="bfloat16",
-                   choices=["bfloat16", "float16", "float32"])
-    p.add_argument("--max-new-tokens", type=int, default=50)
-    p.add_argument("--temperature", type=float, default=0.0)
-    p.add_argument("--max-iters", type=int, default=15)
+
+    # --- mode -------------------------------------------------------------
+    p.add_argument(
+        "--mode",
+        choices=["fuse", "official"],
+        required=True,
+        help="fuse: use build_fuse_pipeline. official: mirror upstream "
+        "agentdojo.scripts.benchmark exactly.",
+    )
+
+    # --- model identifier -------------------------------------------------
+    p.add_argument(
+        "-m",
+        "--model_name_or_path",
+        type=str,
+        nargs="+",
+        required=True,
+        help="In mode=fuse: HF path or local dir. "
+        "In mode=official: a ModelsEnum value "
+        "(e.g. 'gpt-4o-2024-05-13' or a vLLM-served local name).",
+    )
+    p.add_argument(
+        "--model-name", default=None,
+        help="Display name; defaults to model_name_or_path.",
+    )
+
+    # --- mode=fuse specific ----------------------------------------------
+    p.add_argument(
+        "--customized_model_class",
+        type=str,
+        default="",
+        help="(mode=fuse only) Registry key, e.g. LlamaForCausalLMFuse.",
+    )
+    p.add_argument("--no-expert-labels", action="store_true",
+                   help="(mode=fuse only) Disable expert_labels passing.")
+    p.add_argument(
+        "--dtype", default="bfloat16",
+        choices=["bfloat16", "float16", "float32"],
+        help="(mode=fuse only) HF model dtype.",
+    )
+    p.add_argument("--max-new-tokens", type=int, default=512,
+                   help="(mode=fuse only) Generation token budget per step.")
+    p.add_argument("--temperature", type=float, default=0.0,
+                   help="(mode=fuse only) Sampling temperature.")
+    p.add_argument("--max-iters", type=int, default=15,
+                   help="(mode=fuse only) Max tool-call rounds.")
+
+    # --- benchmark mirror of upstream CLI --------------------------------
     p.add_argument("--benchmark-version", default="v1.2.1")
-    p.add_argument("--suites", nargs="+", default=ALL_SUITES,
-                   choices=ALL_SUITES + ["all"])
-    p.add_argument("--attack", default=None,
-                   choices=list(ATTACKS) + [None])   # type: ignore[arg-type]
-    p.add_argument("--user-tasks", nargs="*", default=None)
-    p.add_argument("--injection-tasks", nargs="*", default=None)
-    p.add_argument("--logdir", type=Path, default=Path("./agentdojo_runs"))
-    p.add_argument("--force-rerun", action="store_true")
+    p.add_argument(
+        "--suites", "-s", nargs="+", default=ALL_SUITES,
+        choices=ALL_SUITES + ["all"],
+    )
+    p.add_argument(
+        "--attack", default=None,
+        choices=list(ATTACKS) + [None],  # type: ignore[arg-type]
+    )
+    p.add_argument(
+        "--defense", default=None,
+        choices=list(DEFENSES) + [None],  # type: ignore[arg-type]
+        help="(mode=official only) Applied via PipelineConfig.",
+    )
+    p.add_argument(
+        "--user-task", "-ut",
+        dest="user_tasks", action="append", default=[],
+        help="Repeatable. Empty -> all.",
+    )
+    p.add_argument(
+        "--injection-task", "-it",
+        dest="injection_tasks", action="append", default=[],
+        help="Repeatable. Empty -> all.",
+    )
+    p.add_argument("--system-message-name", default=None,
+                   help="(mode=official only)")
     p.add_argument("--system-message", default=None)
+    p.add_argument(
+        "--tool-output-format", default=None,
+        choices=["yaml", "json", None],
+        help="(mode=official only)",
+    )
+    p.add_argument("--logdir", type=Path, default=Path("./agentdojo_runs"))
+    p.add_argument("--force-rerun", "-f", action="store_true")
+
     return p.parse_args()
 
 
@@ -247,83 +321,74 @@ def main() -> None:
     args = parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
 
-    import torch
-    torch_dtype = {"bfloat16": torch.bfloat16,
-                   "float16":  torch.float16,
-                   "float32":  torch.float32}[args.dtype]
+    if args.user_tasks and len(args.suites) != 1:
+        raise ValueError(
+            "A user task can be specified only when one suite is being executed"
+        )
 
     suites = ALL_SUITES if "all" in args.suites else args.suites
 
-    logger.info("Loading model from %s ...", args.model_name_or_path)
-    pipeline = build_fuse_pipeline(
-        model_path=args.model_name_or_path,
-        customized_model_class=args.customized_model_class or None,
-        model_name=f"local/{args.model_name_or_path}",
-        system_message=args.system_message,
-        torch_dtype=torch_dtype,
-        max_new_tokens=args.max_new_tokens,
-        temperature=args.temperature,
-        pass_expert_labels=not args.no_expert_labels,
-        max_iters=args.max_iters,
-    )
-    pipeline.name = f"local/{args.model_name_or_path}"
+    # --- Build pipeline ---------------------------------------------------
+    if args.mode == "official":
+        logger.info("Mode=official | building AgentPipeline.from_config")
+        pipeline = build_official_pipeline(args)
+    else:
+        logger.info("Mode=fuse | building custom fuse pipeline")
+        pipeline = build_fuse_pipeline_from_args(args)
     logger.info("Pipeline ready: %s", pipeline.name)
 
+    # --- Run --------------------------------------------------------------
     all_results: dict[str, SuiteResults] = {}
+    for suite_name in suites:
+        suite = get_suite(args.benchmark_version, suite_name)
+        all_results[suite_name] = benchmark_suite(
+            suite=suite,
+            pipeline=pipeline,
+            logdir=args.logdir,
+            force_rerun=args.force_rerun,
+            benchmark_version=args.benchmark_version,
+            user_tasks=tuple(args.user_tasks),
+            injection_tasks=tuple(args.injection_tasks),
+            attack=args.attack,
+            defense=args.defense,
+        )
 
-    with OutputLogger(str(args.logdir)):
-        for suite_name in suites:
-            logger.info("Running suite: %s", suite_name)
-            suite = get_suite(args.benchmark_version, suite_name)
-
-            if args.attack is None:
-                results = benchmark_suite_without_injections(
-                    agent_pipeline=pipeline,
-                    suite=suite,
-                    logdir=args.logdir,
-                    force_rerun=args.force_rerun,
-                    user_tasks=args.user_tasks or None,
-                    benchmark_version=args.benchmark_version,
-                )
-            else:
-                attacker = load_attack(args.attack, suite, pipeline)
-
-                # Add this right after attacker = load_attack(...) in main()
-                first_ut = list(suite.user_tasks.values())[0]
-                first_it = list(suite.injection_tasks.values())[0]
-                injections = attacker.attack(first_ut, first_it)
-
-                env = suite.load_and_inject_default_environment(injections)
-                env_dict = env.model_dump()
-
-                # Print the full environment so you can see where injection vectors live
-                import json
-                print(json.dumps(env_dict, indent=2, default=str))
-                # ── Manual injection loop (replaces benchmark_suite_with_injections)
-                results = benchmark_suite_manual_injections(
-                    pipeline=pipeline,
-                    suite=suite,
-                    attacker=attacker,
-                    user_tasks=args.user_tasks,
-                    injection_tasks=args.injection_tasks,
-                    verbose=True,
-                )
-
-            all_results[suite_name] = results
-            show_results(suite_name, results, with_attack=(args.attack is not None))
+    # --- Display ---------------------------------------------------------
+    for suite_name, result in all_results.items():
+        show_results(
+            suite_name, result, show_security_results=(args.attack is not None)
+        )
 
     if len(suites) > 1:
-        all_util = [v for r in all_results.values() for v in r["utility_results"].values()]
-        all_sec  = [v for r in all_results.values() for v in r["security_results"].values()]
+        all_util = [
+            v for r in all_results.values() for v in r["utility_results"].values()
+        ]
+        all_sec = [
+            v for r in all_results.values() for v in r["security_results"].values()
+        ]
         print(f"\n{'=' * 55}")
         print(f"OVERALL  ({len(suites)} suites)")
-        print(f"  Utility  : {sum(all_util)/len(all_util)*100:.1f}%")
+        print(f"  Utility  : {sum(all_util) / len(all_util) * 100:.2f}%")
         if args.attack:
-            print(f"  Security : {sum(all_sec)/len(all_sec)*100:.1f}%")
+            print(f"  Security : {sum(all_sec) / len(all_sec) * 100:.2f}%")
         print(f"{'=' * 55}")
 
-    summary_path = args.logdir / f"{pipeline.name}_{args.attack or 'no-attack'}_summary.json"
-    save_summary(all_results, pipeline.name, args.attack, summary_path)
+    # --- Save summary ----------------------------------------------------
+    summary_path = (
+        args.logdir
+        / f"{pipeline.name.replace('/', '_')}"
+        f"_{args.mode}"
+        f"_{args.attack or 'no-attack'}"
+        f"_{args.defense or 'no-defense'}_summary.json"
+    )
+    save_summary(
+        all_results,
+        pipeline.name,
+        args.mode,
+        args.attack,
+        args.defense,
+        summary_path,
+    )
 
 
 if __name__ == "__main__":

@@ -45,7 +45,7 @@ echo "Using CUDA devices: ${CUDA_IDS[*]}"
 # =========================
 # Extra flags (same as your script)
 # =========================
-EXTRA_FLAGS="--pass_expert_labels --customized_model_class LlamaForCausalLMFuse"
+EXTRA_FLAGS="--customized_model_class LlamaForCausalLMFuse"
 if [ -n "$EXTRA_FLAGS" ]; then
   echo "Detected special model type → Adding flags: $EXTRA_FLAGS"
 else

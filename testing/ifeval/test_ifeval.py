@@ -71,7 +71,8 @@ if __name__ == "__main__":
                                                   model,
                                                   tokenizer,
                                                   attack_log_file=None,
-                                                  print_results=True)
+                                                  print_results=True,
+                                               frontend_delimiters=frontend_delimiters,)
         response: str = clean_out[0][0]
         output.append({
             "prompt": prompt,

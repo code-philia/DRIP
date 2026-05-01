@@ -545,7 +545,8 @@ def main(params, model, tokenizer):
             _, _, _, outputs_all = test_model_output(llm_input,
                                                       model, tokenizer,
                                                       attack_log_file=None,
-                                                      print_results=True
+                                                      print_results=True,
+                                                     frontend_delimiters=frontend_delimiters,
                                                       )
             outputs_all = [item[0] for item in outputs_all]
 
@@ -617,7 +618,8 @@ def main(params, model, tokenizer):
                         _, _, _, outputs_second_step = test_model_output(llm_input_second_step,
                                                                  model, tokenizer,
                                                                  attack_log_file=None,
-                                                                 print_results=True
+                                                                 print_results=True,
+                                                                 frontend_delimiters=frontend_delimiters,
                                                                  )
                         outputs_second_step = [item[0] for item in outputs_second_step]
                         for i, item in enumerate(items_second_step):

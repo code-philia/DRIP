@@ -5,7 +5,7 @@ IFS=$'\n\t'
 
 # === Prompt for CUDA device ===
 read -p "Enter CUDA device ID to use (default: 0): " CUDA_ID
-CUDA_ID=${CUDA_ID:-0}  # Default to 0 if empty
+CUDA_ID=${CUDA_ID:-0}
 
 if ! [[ "$CUDA_ID" =~ ^[0-9]+$ ]]; then
     echo "[ERROR] Invalid CUDA device ID: $CUDA_ID"
@@ -39,13 +39,13 @@ case "$MODEL_PATH" in
         EXTRA_FLAGS="--customized_model_class LlamaForCausalLMFuse"
         ;;
     *ise*)
-        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMISE"
-        ;;
-    *air*)
-        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMAIR"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoE"
         ;;
     *possep*)
-        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMPFT"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoEV2"
+        ;;
+    *)
+        EXTRA_FLAGS="--no-expert-labels"
         ;;
 esac
 
@@ -56,14 +56,11 @@ else
 fi
 
 echo "Executing test..."
-CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.injecagent.test_injecagent --model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
+CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.agentdojo.run_agentdojo --force-rerun --model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
 
 echo
 echo "⚙ Running:"
 echo "$CMD"
 echo
 
-# -----------------------------
-# Execute
-# -----------------------------
 eval $CMD

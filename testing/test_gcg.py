@@ -25,9 +25,9 @@ from gcg.log import setup_logger
 from gcg.utils import Message, Role, SuffixManager, get_nonascii_toks
 from gcg.eval_input import LengthMismatchError
 import logging
-from modeling import LlamaFuseConfig, LlamaForCausalLMFuse, LlamaMoEConfig, LlamaForCausalLMMoE, \
-    LlamaForCausalLMMoEV2, MistralFuseConfig, MistralForCausalLMFuse, MistralMoEConfig, MistralForCausalLMMoE, \
-    MistralForCausalLMMoEV2
+from modeling import LlamaFuseConfig, LlamaForCausalLMFuse, LlamaISEConfig, LlamaForCausalLMISE, \
+    LlamaForCausalLMPFT, MistralFuseConfig, MistralForCausalLMFuse, MistralISEConfig, MistralForCausalLMISE, \
+    MistralForCausalLMPFT
 import transformers
 from peft import PeftModel
 from typing import Dict, Tuple
@@ -40,11 +40,11 @@ logger = logging.getLogger(__name__)
 os.environ['TRANSFORMERS_CACHE'] = "/mnt/sda/hf_cache"
 REGISTRY: Dict[str, Tuple[type, type]] = {
     "LlamaForCausalLMFuse": (LlamaFuseConfig, LlamaForCausalLMFuse),
-    "LlamaForCausalLMMoE": (LlamaMoEConfig, LlamaForCausalLMMoE),
-    "LlamaForCausalLMMoEV2": (LlamaMoEConfig, LlamaForCausalLMMoEV2),
+    "LlamaForCausalLMISE": (LlamaISEConfig, LlamaForCausalLMISE),
+    "LlamaForCausalLMPFT": (LlamaISEConfig, LlamaForCausalLMPFT),
     "MistralForCausalLMFuse": (MistralFuseConfig, MistralForCausalLMFuse),
-    "MistralForCausalLMMoE": (MistralMoEConfig, MistralForCausalLMMoE),
-    "MistralForCausalLMMoEV2": (MistralMoEConfig, MistralForCausalLMMoEV2),
+    "MistralForCausalLMISE": (MistralISEConfig, MistralForCausalLMISE),
+    "MistralForCausalLMPFT": (MistralISEConfig, MistralForCausalLMPFT),
 }
 
 def load_model_and_tokenizer(
@@ -146,6 +146,7 @@ class CustomConversation(fastchat.conversation.Conversation):
 
 
 def gcg(d_item, attack, cfg, data_delm):
+    d_item = {**d_item}  # add this
     cfg.sample_id = d_item["id"]
     attack._setup_log_file(cfg)
     prompt_no_sys = (
@@ -167,18 +168,6 @@ def gcg(d_item, attack, cfg, data_delm):
     return d_item
 
 def gcg_prefix(d_item, attack, cfg, data_delm):
-    """GCG attack that optimises tokens placed just BEFORE TEST_INJECTED_PROMPT.
-
-    During optimisation the full injection context is present so the adv tokens
-    are learned in the correct semantic context:
-
-        … [input] [TEST_INJECTED_PROMPT] [adv_tokens]   <- optimisation prompt
-                                                            (adv_tokens = suffix here)
-
-    At eval time the adv tokens are moved to just before TEST_INJECTED_PROMPT:
-
-        … [input] [adv_tokens] [TEST_INJECTED_PROMPT]   <- eval prompt
-    """
     d_item = {**d_item}  # shallow copy — avoid mutating the caller's dict
     cfg.sample_id = d_item["id"]
     attack._setup_log_file(cfg)
@@ -263,6 +252,7 @@ def test_model_output(
         toks = _tokenize_fn(
             [lm_input],
             tokenizer,
+            frontend_delimiters=frontend_delimiters,
         )
         inp = toks["input_ids"][0].unsqueeze(0).to(model.device)
         gen_kwargs = dict(
@@ -528,7 +518,8 @@ if __name__ == "__main__":
                 llm_inputs=[attacked_str],
                 model=model,
                 tokenizer=tokenizer,
-                print_results=True
+                print_results=True,
+                frontend_delimiters=frontend_delimiters
             )
 
             in_response += sample_in_response

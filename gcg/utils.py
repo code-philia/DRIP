@@ -17,7 +17,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from gcg.eval_input import EvalInput
 from gcg.types import PrefixCache, TokenIds
-from data_generation.data_loader import compute_expert_labels
+from data_generation.data_loader import compute_expert_labels_from_input_ids
 
 logger = logging.getLogger(__name__)
 from copy import deepcopy
@@ -144,7 +144,7 @@ class SuffixManager:
             adv_suffix: str | None = None,
             target: str | None = None,
             static_only: bool = False,
-    ) -> tuple[torch.Tensor, slice, slice, slice]:
+    ) -> tuple[torch.LongTensor, slice, slice, slice]:
         """Turn messages into token ids. Run once for attack step.
 
         Compute token ids for given messages and target, along with slices
@@ -337,8 +337,17 @@ class SuffixManager:
 
         out = self.get_input_ids(messages, suffix, target)
         orig_input_ids, optim_slice, target_slice, loss_slice = out
-        orig_expert_labels = compute_expert_labels(orig_input_ids, user_seperator, data_seperator, response_seperator,
-                                                   num_labels)
+        # orig_expert_labels = compute_expert_labels(orig_input_ids, user_seperator, data_seperator, response_seperator,
+        #                                            num_labels)
+
+        orig_expert_labels = compute_expert_labels_from_input_ids(
+            orig_input_ids.unsqueeze(0),
+            data_delm_ids=data_seperator.tolist(),
+            response_delm_ids=response_seperator.tolist(),
+            inst_delm_ids=user_seperator.tolist(),
+            num_labels=num_labels
+        ).squeeze(0)
+
         # print(optim_slice, optim_slice.start, optim_slice.stop)
         if max_target_len is not None:
             # Adjust target slice to be at most max_target_len
@@ -461,8 +470,13 @@ def get_prefix_cache(
         num_labels: int
 ) -> tuple[PrefixCache, int]:
     static_input_ids = suffix_manager.get_input_ids(messages, static_only=True)
-    expert_labels = compute_expert_labels(static_input_ids, user_seperator, data_seperator, response_seperator,
-                                          num_labels)
+    expert_labels = compute_expert_labels_from_input_ids(
+        static_input_ids.unsqueeze(0),
+        data_delm_ids=data_seperator.tolist(),
+        response_delm_ids=response_seperator.tolist(),
+        inst_delm_ids=user_seperator.tolist(),
+        num_labels=num_labels
+    ).squeeze(0)
     static_input_str = tokenizer.decode(
         static_input_ids,
         skip_special_tokens=False,

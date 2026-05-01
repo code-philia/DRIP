@@ -122,11 +122,13 @@ if __name__ == "__main__":
                                  'spotlight_delimit', 'spotlight_datamark', 'spotlight_encode'],
                         help='Baseline test-time zero-shot prompting defense')
     parser.add_argument('--customized_model_class', type=str, help="Customized model class", default='')
+    parser.add_argument('--load_as_adapter', action='store_true')
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
 
     model, tokenizer, frontend_delimiters, training_attacks = load_full_model(args.model_name_or_path,
-                                                                              customized_model_class=args.customized_model_class)
+                                                                              customized_model_class=args.customized_model_class,
+                                                                              load_as_adapter=args.load_as_adapter)
 
     delm = DELIMITERS[frontend_delimiters] if isinstance(frontend_delimiters, list) else DELIMITERS[frontend_delimiters]
     fmt = dict(PROMPT_FORMAT[frontend_delimiters])
@@ -196,14 +198,16 @@ if __name__ == "__main__":
             _, _, _, injected_out = test_model_output([data_with_prob],
                                                         model, tokenizer,
                                                         attack_log_file=None,
-                                                        print_results=False
+                                                        print_results=False,
+                                                        frontend_delimiters=frontend_delimiters,
                                                       )
             data_with_prob_response: str = injected_out[0][0]
 
             _, _, _, clean_out = test_model_output([instruction_with_prob],
                                                      model, tokenizer,
                                                      attack_log_file=None,
-                                                     print_results=False
+                                                     print_results=False,
+                                                   frontend_delimiters=frontend_delimiters,
                                                    )
             instruction_with_prob_response: str = clean_out[0][0]
 

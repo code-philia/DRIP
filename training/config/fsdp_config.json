@@ -1,9 +1,11 @@
 {
-  "auto_wrap_policy": {
-    "transformer_layer_cls_to_wrap": ["LlamaDecoderLayer"]
-  },
-  "use_orig_params": false,
-  "sync_module_states": true,
+  "transformer_layer_cls_to_wrap": ["LlamaDecoderLayer"],
+  "backward_prefetch": "BACKWARD_PRE",
   "forward_prefetch": false,
-  "backward_prefetch": "backward_pre"
+  "use_orig_params": true,
+  "sync_module_states": true,
+  "cpu_ram_efficient_loading": true,
+  "offload_params": false,
+  "limit_all_gathers": true,
+  "state_dict_type": "SHARDED_STATE_DICT"
 }

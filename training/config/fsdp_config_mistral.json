@@ -1,9 +1,11 @@
 {
-  "auto_wrap_policy": {
-    "transformer_layer_cls_to_wrap": ["MistralDecoderLayer"]
-  },
+  "transformer_layer_cls_to_wrap": ["MistralDecoderLayer"],
+  "backward_prefetch": "BACKWARD_PRE",
+  "forward_prefetch": false,
   "use_orig_params": true,
   "sync_module_states": true,
-  "forward_prefetch": false,
-  "backward_prefetch": "backward_pre"
+  "cpu_ram_efficient_loading": true,
+  "offload_params": false,
+  "limit_all_gathers": true,
+  "state_dict_type": "SHARDED_STATE_DICT"
 }

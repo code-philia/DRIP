@@ -1,8 +1,5 @@
 import transformers
 from transformers import Trainer
-from transformers.utils import logging
-from data_generation.data_loader import make_supervised_data_module
-from peft import LoraConfig, get_peft_model
 from transformers.trainer import PreTrainedModel, is_sagemaker_mp_enabled, Adafactor, is_bitsandbytes_available
 from typing import Optional, Tuple, Any, List
 from torch import nn
@@ -32,7 +29,7 @@ class AttackArguments:
     attack: str = field(default='TextTextText_None', metadata={"help": "Attack type for SFT/Align"})
 
 @dataclass
-class TrainingArguments(trl.ORPOConfig):
+class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     model_max_length: int = field(
@@ -64,7 +61,7 @@ class DPOArgsSecAlign(trl.DPOConfig):
 
 
 @dataclass
-class DPOArgsInstFuse(trl.DPOConfig):
+class DPOArgsDRIP(trl.DPOConfig):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     model_max_length: int = field(
@@ -182,30 +179,6 @@ class DPOTrainerOurs(DPOTrainer):
                 - F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
                 - F.logsigmoid(-self.beta * logits) * self.label_smoothing
             )
-            chosen_rewards   = self.beta * (chosen_logps - ref_chosen_logps).detach()
-            rejected_rewards = self.beta * (rejected_logps - ref_rejected_logps).detach()
-
-        reward_accuracies = (chosen_rewards > rejected_rewards).float()
-        prefix = "train"
-        # metrics[f"{prefix}rewards/chosen"] = self._safe_gather(chosen_rewards)
-        # metrics[f"{prefix}rewards/rejected"] = self._safe_gather(rejected_rewards)
-        # metrics[f"{prefix}rewards/margins"] = self._safe_gather(chosen_rewards - rejected_rewards)
-
-        # metrics[f"{prefix}rewards/margins"] = (
-        #     self.accelerator.gather_for_metrics(chosen_rewards - rejected_rewards).mean().item()
-        # )
-        # metrics[f"{prefix}logps/chosen"] = (
-        #     self.accelerator.gather_for_metrics(chosen_logps).detach().mean().item()
-        # )
-        # metrics[f"{prefix}logps/rejected"] = (
-        #     self.accelerator.gather_for_metrics(rejected_logps).detach().mean().item()
-        # )
-        # metrics[f"{prefix}logits/chosen"] = (
-        #     self.accelerator.gather_for_metrics(chosen_mean_logits).detach().mean().item()
-        # )
-        # metrics[f"{prefix}logits/rejected"] = (
-        #     self.accelerator.gather_for_metrics(rejected_mean_logits).detach().mean().item()
-        # )
 
         loss = losses.mean()
         # Make sure to move the loss to the device the original accumulating loss is at back in the `Trainer` class:
@@ -217,7 +190,7 @@ class DPOTrainerOurs(DPOTrainer):
 
         return loss
 
-    def create_optimizer(self, special_params_list = ["deinstruction_shifts"]):
+    def create_optimizer(self, special_params_list = ["deinstruction_shift"]):
         opt_model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
         if self.optimizer is None:
             decay_parameters = self.get_decay_parameter_names(opt_model)
@@ -278,6 +251,69 @@ class DPOTrainerOurs(DPOTrainer):
 
         return self.optimizer
 
+class DPOTrainerAIR(DPOTrainer):
+    def create_optimizer(self, special_params_list = ["intermediate_shifts"]):
+        opt_model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
+        if self.optimizer is None:
+            decay_parameters = self.get_decay_parameter_names(opt_model)
+            optimizer_grouped_parameters = [
+                {
+                    "params": [
+                        p for n, p in opt_model.named_parameters()
+                        if any(kw in n for kw in special_params_list) and p.requires_grad
+                    ],
+                    "weight_decay": 0.0,
+                    "lr": self.args.learning_rate,  ## move 10 times faster
+                },
+                {
+                    "params": [
+                        p for n, p in opt_model.named_parameters()
+                        if
+                        (not any(kw in n for kw in special_params_list)) and (n in decay_parameters) and p.requires_grad
+                    ],
+                    "weight_decay": self.args.weight_decay,
+                    "lr": self.args.learning_rate,
+                },
+                {
+                    "params": [
+                        p for n, p in opt_model.named_parameters()
+                        if (not any(kw in n for kw in special_params_list)) and (
+                                    n not in decay_parameters) and p.requires_grad
+                    ],
+                    "weight_decay": 0.0,
+                    "lr": self.args.learning_rate,
+                },
+            ]
+
+            optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(self.args, opt_model)
+
+            if "params" in optimizer_kwargs:
+                optimizer_grouped_parameters = optimizer_kwargs.pop("params")
+
+            if "model" in optimizer_kwargs:
+                optimizer_grouped_parameters = optimizer_kwargs.pop("model")
+
+            if "optimizer_dict" in optimizer_kwargs:
+                optimizer_grouped_parameters = optimizer_kwargs.pop("optimizer_dict")
+
+            self.optimizer = optimizer_cls(optimizer_grouped_parameters,
+                                           **optimizer_kwargs)
+
+            if optimizer_cls.__name__ == "Adam8bit":
+                import bitsandbytes
+
+                manager = bitsandbytes.optim.GlobalOptimManager.get_instance()
+
+                skipped = 0
+                for module in opt_model.modules():
+                    if isinstance(module, nn.Embedding):
+                        skipped += sum({p.data_ptr(): p.numel() for p in module.parameters()}.values())
+                        logger.info(f"skipped {module}: {skipped / 2 ** 20}M params")
+                        manager.register_module_override(module, "weight", {"optim_bits": 32})
+                        logger.debug(f"bitsandbytes: will optimize {module} in fp32")
+                logger.info(f"skipped: {skipped / 2 ** 20}M params")
+
+        return self.optimizer
 
 class SFTTrainerParams(Trainer):
     def create_optimizer(self, special_params_list: List[str]):
@@ -349,5 +385,6 @@ class SFTTrainerOurs(SFTTrainerParams):
 class SFTTrainerISE(SFTTrainerParams):
     def create_optimizer(self, special_params_list = ["input_shifts"]):
         return super().create_optimizer(special_params_list)
+
 
 

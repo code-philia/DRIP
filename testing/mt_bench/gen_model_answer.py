@@ -75,7 +75,8 @@ def get_model_answers(
             conv.append_message(conv.roles[1], " " + conv.sep)  # Using resp_delm
             prompt = conv.get_prompt()
             tokenized_inpt = _tokenize_fn([prompt],
-                                          tokenizer)
+                                          tokenizer,
+                                          frontend_delimiters=frontend_delimiters)
             input_ids = tokenized_inpt['input_ids'][0].unsqueeze(0).to(model.device)
 
             if temperature < 1e-4:

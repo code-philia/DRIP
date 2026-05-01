@@ -39,10 +39,13 @@ case "$MODEL_PATH" in
         EXTRA_FLAGS="--customized_model_class LlamaForCausalLMFuse"
         ;;
     *ise*)
-        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoE"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMISE"
+        ;;
+    *air*)
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMAIR"
         ;;
     *possep*)
-        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoEV2"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMPFT"
         ;;
 esac
 

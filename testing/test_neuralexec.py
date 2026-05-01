@@ -5,7 +5,7 @@ from testing.test import load_full_model, recursive_filter, test_model_output
 from attacks import *
 from copy import deepcopy
 from functools import partial
-from data_generation.data_loader import _tokenize_fn, jload, jdump, smart_tokenizer_and_embedding_resize
+from data_generation.data_loader import jload
 from typing import Dict, Tuple
 
 TRIGGER: Dict[str, Tuple[str, str]] = {
@@ -135,7 +135,8 @@ if __name__ == "__main__":
                                                                       model,
                                                                       tokenizer,
                                                                       attack_log_file=attack_log_file,
-                                                                      print_results=True
+                                                                      print_results=True,
+                                                                      frontend_delimiters=frontend_delimiters,
                                                                       )
 
     print(

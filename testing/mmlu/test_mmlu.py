@@ -320,6 +320,7 @@ if __name__ == "__main__":
             tokenizer,
             attack_log_file=None,
             print_results=False,
+            frontend_delimiters=frontend_delimiters,
         )
 
         # Score and collect results

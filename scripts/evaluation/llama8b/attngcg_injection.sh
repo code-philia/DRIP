@@ -39,13 +39,10 @@ case "$MODEL_PATH" in
         EXTRA_FLAGS="--customized_model_class LlamaForCausalLMFuse"
         ;;
     *ise*)
-        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMISE"
-        ;;
-    *air*)
-        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMAIR"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoE"
         ;;
     *possep*)
-        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMPFT"
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMMoEV2"
         ;;
 esac
 
@@ -55,8 +52,7 @@ else
     echo "No special model type detected → Running without extra flags"
 fi
 
-echo "Executing test..."
-CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.injecagent.test_injecagent --model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
+CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.test_gcg --attack attngcg --model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
 
 echo
 echo "⚙ Running:"

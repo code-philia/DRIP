@@ -3,7 +3,7 @@ import torch
 from transformers import MistralConfig
 from modeling.llama_drip import (
     _get_last_indices,
-    _compute_expert_labels_from_input_ids,
+    compute_expert_labels_from_input_ids,
     CausalLMFuseOutputWithPast,
     set_delimiter_ids_in_config,
     _get_first_indices
@@ -60,7 +60,7 @@ class MistralModel(transformers.MistralModel):
     ) -> Optional[torch.LongTensor]:
         if input_ids is None or not self._has_delimiter_config():
             return None
-        return _compute_expert_labels_from_input_ids(
+        return compute_expert_labels_from_input_ids(
             input_ids=input_ids,
             data_delm_ids=self.config.data_delm_ids,
             response_delm_ids=self.config.response_delm_ids,
@@ -86,6 +86,9 @@ class MistralModel(transformers.MistralModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+
+        if isinstance(past_key_values, (list, tuple)):
+            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
 
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache()
@@ -156,6 +159,7 @@ class MistralModel(transformers.MistralModel):
         hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
+            hidden_states=hidden_states,
             past_key_values=past_key_values if use_cache else None,
             attentions=tuple(all_self_attns) if output_attentions else None,
         )
