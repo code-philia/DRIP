@@ -1,252 +1,488 @@
 import os
-os.environ["HF_HOME"] = "/mnt/sda/hf_hub"
-
-import sys
 import argparse
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
+
 import torch
-
-# =============================================================================
-# PATCH MARKER v2: bind device + pre-init PG with device_id BEFORE importing
-# transformers. Just calling torch.cuda.set_device() is NOT enough — the
-# PyTorch warning is triggered by init_process_group() being called without
-# device_id, which HF Trainer does. We pre-initialize the PG ourselves so
-# HF's later call is a no-op.
-# =============================================================================
-def _bind_and_init_distributed():
-    if "LOCAL_RANK" not in os.environ:
-        return  # single-process / no torchrun
-
-    local_rank = int(os.environ["LOCAL_RANK"])
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    rank = int(os.environ.get("RANK", local_rank))
-
-    if not torch.cuda.is_available():
-        return
-
-    n_gpus = torch.cuda.device_count()
-    assert local_rank < n_gpus, (
-        f"LOCAL_RANK={local_rank} but only {n_gpus} GPUs visible. "
-        f"Check CUDA_VISIBLE_DEVICES / nproc_per_node."
-    )
-
-    # 1. Bind CUDA current device for this process.
-    torch.cuda.set_device(local_rank)
-
-    # 2. Pre-init the default PG with device_id. This is the ONLY way to
-    #    suppress the warning; HF Trainer's later init_process_group becomes
-    #    a no-op since is_initialized() returns True.
-    if world_size > 1 and not torch.distributed.is_initialized():
-        torch.distributed.init_process_group(
-            backend="nccl",
-            device_id=torch.device(f"cuda:{local_rank}"),
-        )
-
-    # Print on every rank for diagnostic — if you don't see this in the log,
-    # the patch is NOT running and you're executing a stale file.
-    print(f"[PATCH v2][rank {rank}/{world_size}] bound cuda:{local_rank} "
-          f"({torch.cuda.get_device_name(local_rank)}); "
-          f"PG initialized={torch.distributed.is_initialized()}",
-          flush=True)
-
-_bind_and_init_distributed()
-# =============================================================================
-
 import transformers
 from transformers import BitsAndBytesConfig
-
-from config import DELIMITERS
 from transformers.utils import logging
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from datasets import load_dataset
 from trl import DPOTrainer
-import torch.nn as nn
-from training.trainer import DPOTrainerOurs, SFTTrainerOurs, SFTTrainerISE, DPOTrainerAIR, DPOArgsDRIP, \
-    ModelArguments, DataArguments, TrainingArguments, AttackArguments, DPOArgsSecAlign
-from data_generation.dpo_data_loader import make_dpo_data_module
-from data_generation.data_loader import make_supervised_data_module, \
-    make_supervised_data_module_orig, \
-    smart_tokenizer_and_embedding_resize
 
+from config import DELIMITERS, DEFAULT_TOKENS, SPECIAL_DELM_TOKENS
+from training.trainer import (
+    DPOTrainerOurs, SFTTrainerOurs, SFTTrainerISE, DPOTrainerAIR, DPOTrainerMOE,
+    DPOArgsDRIP, DPOArgsSecAlign,
+    ModelArguments, DataArguments, TrainingArguments, AttackArguments,
+)
+from data_generation.dpo_data_loader import make_dpo_data_module
+from data_generation.sft_data_loader import (
+    make_supervised_data_module,
+    make_supervised_data_module_orig,
+    smart_tokenizer_and_embedding_resize,
+)
 from modeling import (
-    MistralFuseConfig,
-    MistralForCausalLMFuse,
-    MistralISEConfig,
-    MistralAIRConfig,
-    MistralForCausalLMISE,
+    MistralDRIPConfig, MistralForCausalLMDRIP,
+    MistralISEConfig, MistralForCausalLMISE,
+    MistralAIRConfig, MistralForCausalLMAIR,
     MistralForCausalLMPFT,
-    MistralForCausalLMAIR,
-    LlamaISEConfig,
-    LlamaAIRConfig,
-    LlamaForCausalLMISE,
+    LlamaISEConfig, LlamaForCausalLMISE,
+    LlamaAIRConfig, LlamaForCausalLMAIR,
     LlamaForCausalLMPFT,
-    LlamaForCausalLMAIR,
-    Qwen3FuseConfig,
-    Qwen3ForCausalLMFuse,
-    LlamaFuseConfig,
-    LlamaForCausalLMFuse,
+    LlamaDRIPConfig, LlamaForCausalLMDRIP,
+    LlamaForCausalLMNoFuse, LlamaForCausalLMConcatFuse,
+    LlamaForCausalLMEmbeddingShift,
+    Qwen3DRIPConfig, Qwen3ForCausalLMDRIP,
     set_delimiter_ids_in_config,
-    LlamaForCausalLMNoFuse,
-    LlamaForCausalLMConcatFuse,
-    LlamaForCausalLMEmbeddingShift
 )
 
-from config import DEFAULT_TOKENS, SPECIAL_DELM_TOKENS
 
 logger = logging.get_logger(__name__)
-os.environ.setdefault("WANDB_WATCH", "false")  # don't trace frozen base params
 
 
+# =============================================================================
+# Model registries
+# =============================================================================
 
-SHIFTS_ONLY_ARCHES = {"ise", "air"}
+LLAMA_REGISTRY = {
+    "fuse":           (LlamaDRIPConfig, LlamaForCausalLMDRIP),
+    "nofuse":         (LlamaDRIPConfig, LlamaForCausalLMNoFuse),
+    "concatfuse":     (LlamaDRIPConfig, LlamaForCausalLMConcatFuse),
+    "embeddingshift": (LlamaDRIPConfig, LlamaForCausalLMEmbeddingShift),
+    "ise":            (LlamaISEConfig,  LlamaForCausalLMISE),
+    "air":            (LlamaAIRConfig,  LlamaForCausalLMAIR),
+    "possep":         (LlamaISEConfig,  LlamaForCausalLMPFT),
+}
 
-def pick_llama_model(arch: str):
-    if arch == "fuse":
-        return LlamaFuseConfig, LlamaForCausalLMFuse
-    if arch == "nofuse":
-        return LlamaFuseConfig, LlamaForCausalLMNoFuse
-    if arch == "concatfuse":
-        return LlamaFuseConfig, LlamaForCausalLMConcatFuse
-    if arch == "embeddingshift":
-        return LlamaFuseConfig, LlamaForCausalLMEmbeddingShift
-    if arch == "ise":
-        return LlamaISEConfig, LlamaForCausalLMISE
+MISTRAL_REGISTRY = {
+    "fuse":   (MistralDRIPConfig, MistralForCausalLMDRIP),
+    "ise":    (MistralISEConfig,  MistralForCausalLMISE),
+    "air":    (MistralAIRConfig,  MistralForCausalLMAIR),
+    "possep": (MistralISEConfig,  MistralForCausalLMPFT),
+}
+
+QWEN_REGISTRY = {
+    "fuse": (Qwen3DRIPConfig, Qwen3ForCausalLMDRIP),
+}
+
+FAMILY_REGISTRY = {
+    "llama":   LLAMA_REGISTRY,
+    "mistral": MISTRAL_REGISTRY,
+    "qwen":    QWEN_REGISTRY,
+}
+
+
+def pick_model(family: str, arch: str):
+    reg = FAMILY_REGISTRY.get(family)
+    if reg is None:
+        raise ValueError(f"Unsupported model-family: {family}")
+    if arch not in reg:
+        raise ValueError(f"Unsupported {family} arch: {arch}")
+    return reg[arch]
+
+
+# =============================================================================
+# LoRA config
+# =============================================================================
+
+_FUSE_LIKE = {"fuse", "nofuse", "concatfuse", "embeddingshift"}
+_ATTN_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+
+def build_lora_config(
+        objective: str,
+        arch: str,
+        model_family: str,
+) -> LoraConfig:
+
+    is_moe = model_family == "qwen"
+
     if arch == "air":
-        return LlamaAIRConfig, LlamaForCausalLMAIR
-    if arch == "possep":
-        return LlamaISEConfig, LlamaForCausalLMPFT
-    raise ValueError(f"Unsupported LLaMA arch: {arch}")
+        modules_to_save = ["intermediate_shifts"]
+        if objective == "dpo":
+            modules_to_save += ["lm_head", "embed_tokens"]
+        return LoraConfig(
+            r=64,
+            lora_alpha=8,
+            lora_dropout=0.1,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=_ATTN_MODULES if not is_moe else ["q_proj", "v_proj"],
+            modules_to_save=modules_to_save,
+        )
 
-
-def pick_mistral_model(arch: str):
-    if arch == "fuse":
-        return MistralFuseConfig, MistralForCausalLMFuse
     if arch == "ise":
-        return MistralISEConfig, MistralForCausalLMISE
-    if arch == "air":
-        return MistralAIRConfig, MistralForCausalLMAIR
-    if arch == "possep":
-        return MistralISEConfig, MistralForCausalLMPFT
-    raise ValueError(f"Unsupported Mistral arch: {arch}")
+        modules_to_save = ["input_shifts", "embed_tokens"]
+        target_modules = _ATTN_MODULES if is_moe else "all-linear"
+        return LoraConfig(
+            r=16,
+            lora_alpha=8,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=target_modules,
+            modules_to_save=modules_to_save,
+        )
 
+    # ── Fuse-like (DRIP and variants) ───────────────────────────────────
+    if objective in ("dpo", "sft") and arch in _FUSE_LIKE:
+        if is_moe:
+            modules_to_save = ["deinstruction_shift"]
+            target_modules = _ATTN_MODULES
+        else:
+            # Dense: full LoRA + save embed/lm_head/deinstruction_shift
+            modules_to_save = ["embed_tokens", "lm_head", "deinstruction_shift"]
+            target_modules = "all-linear"
 
-def pick_qwen_model(arch: str):
-    if arch == "fuse":
-        return Qwen3FuseConfig, Qwen3ForCausalLMFuse
-    raise ValueError(f"Unsupported Qwen3 arch: {arch}")
+        return LoraConfig(
+            r=16,
+            lora_alpha=8,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=target_modules,
+            modules_to_save=modules_to_save,
+        )
 
-
-def build_lora_config(objective: str, arch: str) -> LoraConfig:
-    """Used for non-shifts-only arches (fuse / nofuse / concatfuse / etc.)."""
-    if objective in ("dpo", "sft") and arch in ("fuse", "nofuse", "concatfuse", "embeddingshift"):
-        modules = ["embed_tokens", "lm_head", "deinstruction_shift"]
-        target_module = "all-linear"
-    else:
-        modules = ["lm_head", "embed_tokens"]
-        target_module = "all-linear"
+    # ── Default (vanilla SFT/DPO without custom architecture) ───────────
+    modules_to_save = ["lm_head", "embed_tokens"] if not is_moe else None
+    target_modules = _ATTN_MODULES if is_moe else "all-linear"
 
     return LoraConfig(
-        r=16, lora_alpha=8,
+        r=16,
+        lora_alpha=8,
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=target_module,
-        modules_to_save=modules,
+        target_modules=target_modules,
+        modules_to_save=modules_to_save,
     )
 
 
-# Substrings used to identify trainable parameters in the shifts-only path.
-# A parameter is trainable iff its qualified name contains any of these.
-_TRAINABLE_KEYS = ("input_shifts", "intermediate_shifts", "lm_head")
+# =============================================================================
+# AIR: shifts-only training (no LoRA)
+# =============================================================================
 
-
-def _is_trainable_name(name: str) -> bool:
-    return any(k in name for k in _TRAINABLE_KEYS)
-
-
-def freeze_base_train_shifts(model: nn.Module) -> int:
-    """Freeze all params; unfreeze input_shifts / intermediate_shifts /
-    lm_head / embed_tokens. Returns number of trainable parameters."""
-    for p in model.parameters():
-        p.requires_grad = False
-
-    n_unfrozen = 0
-    matched_names = []
+def freeze_base_train_shifts(model, target_param_name: str = "intermediate_shifts"):
+    """Freeze entire base model except the target shift layer.
+    Used for AIR: only nn.Embedding `intermediate_shifts` is trained."""
+    trainable, frozen = 0, 0
     for name, p in model.named_parameters():
-        if _is_trainable_name(name):
+        if target_param_name in name:
             p.requires_grad = True
-            n_unfrozen += p.numel()
-            matched_names.append(name)
+            trainable += p.numel()
+        else:
+            p.requires_grad = False
+            frozen += p.numel()
 
-    # Tied embedding sanity check
-    tie = bool(getattr(model.config, "tie_word_embeddings", False))
+    total = trainable + frozen
+    print(f"=== Trainable params ({target_param_name} only) ===")
+    print(f"trainable: {trainable:,} ({100 * trainable / total:.4f}%)")
+    print(f"frozen:    {frozen:,}")
+    print(f"total:     {total:,}")
 
-    print("=== Shifts-only training: trainable params ===")
-    for n in matched_names:
-        p = dict(model.named_parameters())[n]
-        print(f"  {n} | shape={tuple(p.shape)}")
-    print(f"tie_word_embeddings: {tie}")
-    print(f"Total trainable: {n_unfrozen:,} ({n_unfrozen / 1e6:.3f}M)")
-    return n_unfrozen
+    if trainable == 0:
+        raise RuntimeError(
+            f"No parameter contains '{target_param_name}'. "
+            f"Check param names with `for n, _ in model.named_parameters(): print(n)`."
+        )
+    return model
 
 
-def save_shifts_only(model: nn.Module, output_dir: str, tokenizer, is_main_process: bool) -> None:
-    """Save only the trained tensors (shifts + lm_head + embed_tokens) + config + tokenizer.
-    Avoids saving the frozen 7B base attention/mlp/norm weights."""
-    if not is_main_process:
-        return
+# =============================================================================
+# Argument parsing
+# =============================================================================
 
-    os.makedirs(output_dir, exist_ok=True)
+def parse_args(argv):
+    """Two-stage parse: route by objective/arch, then parse HF dataclasses."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--objective",
+                   choices=["dpo", "sft", "secalign_dpo", "struq_sft"],
+                   required=True)
+    p.add_argument("--model-family",
+                   choices=["llama", "mistral", "qwen"],
+                   default="base")
+    p.add_argument("--arch", required=True,
+                   choices=["base", "fuse", "nofuse", "concatfuse",
+                            "embeddingshift", "ise", "possep", "air"])
+    p.add_argument("--use_qlora", action="store_true",
+                   help="Use 4-bit QLoRA quantization (saves ~70%% VRAM, "
+                        "incompatible with FSDP, use DDP instead)")
+    p.add_argument("--qlora_bits", type=int, default=4, choices=[4, 8],
+                   help="Quantization bits (4 or 8). Default 4.")
+    known, remaining = p.parse_known_args(argv)
 
-    # Walk model and collect all trainable tensors (CPU copy).
-    custom_state: Dict[str, torch.Tensor] = {}
-    for name, p in model.named_parameters():
-        if _is_trainable_name(name):
-            custom_state[name] = p.detach().cpu()
+    if known.objective in ("dpo"):
+        cls = (ModelArguments, DataArguments, DPOArgsDRIP, AttackArguments)
+        order = ("model", "data", "training", "attack")
+    elif known.objective == "secalign_dpo":
+        cls = (ModelArguments, DataArguments, DPOArgsSecAlign, AttackArguments)
+        order = ("model", "training", "data", "attack")  # SecAlign uses (model, training, data) order
+    else:  # sft, struq_sft
+        cls = (ModelArguments, DataArguments, TrainingArguments, AttackArguments)
+        order = ("model", "data", "training", "attack")
 
-    save_path = os.path.join(output_dir, "shifts.bin")
-    torch.save(custom_state, save_path)
-    total_bytes = sum(t.numel() * t.element_size() for t in custom_state.values())
-    print(f"Saved {len(custom_state)} trained tensors "
-          f"({total_bytes / 1e6:.1f} MB) -> {save_path}")
+    parsed = transformers.HfArgumentParser(cls).parse_args_into_dataclasses(remaining)
+    # SecAlign branch returns dataclasses in (model, training, data, attack) order
+    # whereas other branches use (model, data, training, attack). Normalize.
+    if known.objective == "secalign_dpo":
+        model_args, training_args, data_args, attack_args = parsed
+    else:
+        model_args, data_args, training_args, attack_args = parsed
+    return known, model_args, data_args, training_args, attack_args
 
-    # Save config and tokenizer so inference can rebuild the model.
-    base = getattr(model, "base_model", model)
-    base_config = getattr(base, "config", None) or model.config
-    base_config.save_pretrained(output_dir)
-    tokenizer.save_pretrained(output_dir)
-    print(f"Saved config and tokenizer -> {output_dir}")
 
+# =============================================================================
+# Model construction
+# =============================================================================
+
+def build_bnb_config(bits: int = 4) -> BitsAndBytesConfig:
+    """NF4 / int8 quantization config for QLoRA."""
+    if bits == 4:
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=False,
+            llm_int8_skip_modules=[
+                "lm_head",
+                "embed_tokens",
+                "deinstruction_shift",
+                "intermediate_shifts",
+                "input_shifts",
+            ],
+        )
+    return BitsAndBytesConfig(load_in_8bit=True)
+
+
+def _common_load_kwargs(training_args, bnb_config=None):
+    kwargs = dict(
+        cache_dir=getattr(training_args, "cache_dir", None),
+        low_cpu_mem_usage=True,        # init on meta device, save ~16GB CPU RAM/rank
+        torch_dtype=torch.bfloat16,    # avoid fp32 intermediate copy
+    )
+    if bnb_config is not None:
+        kwargs["quantization_config"] = bnb_config
+        # QLoRA requires explicit device_map; FSDP is not supported on this path
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        kwargs["device_map"] = {"": local_rank}
+    return kwargs
+
+
+def build_base_model(model_args, training_args, tokenizer, bnb_config=None):
+    """Vanilla AutoModelForCausalLM + special-token resize.
+    Used for arch='base' or objectives 'secalign_dpo' / 'struq_sft'."""
+    config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path)
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        model_args.model_name_or_path, config=config,
+        trust_remote_code=True,
+        **_common_load_kwargs(training_args, bnb_config=bnb_config),
+    )
+    special_tokens = {
+        "pad_token": DEFAULT_TOKENS.get("pad_token", tokenizer.pad_token),
+        "eos_token": DEFAULT_TOKENS.get("eos_token", tokenizer.eos_token),
+        "bos_token": DEFAULT_TOKENS.get("bos_token", tokenizer.bos_token),
+        "unk_token": DEFAULT_TOKENS.get("unk_token", tokenizer.unk_token),
+        "additional_special_tokens": SPECIAL_DELM_TOKENS,
+    }
+    smart_tokenizer_and_embedding_resize(
+        special_tokens_dict=special_tokens, tokenizer=tokenizer, model=model)
+    return model, config
+
+
+def build_custom_model(known, model_args, training_args, tokenizer,
+                       frontend_delimiters, bnb_config=None):
+    """Family/arch-specific config + model class with delimiter ids set."""
+    Cfg, Model = pick_model(known.model_family, known.arch)
+
+    config = Cfg.from_pretrained(model_args.model_name_or_path)
+    if known.arch == "air":
+        config.apply_intermediate_shifts = True
+
+    delms = DELIMITERS[frontend_delimiters]
+    num_labels = len(delms)
+    if num_labels == 4:
+        inst, data, resp = delms[1], delms[2], delms[3]
+    else:
+        inst, data, resp = delms[0], delms[1], delms[-1]
+    set_delimiter_ids_in_config(
+        config, tokenizer,
+        inst_delm=inst, data_delm=data, response_delm=resp,
+        num_labels=num_labels,
+    )
+
+    model = Model.from_pretrained(
+        model_args.model_name_or_path,
+        ignore_mismatched_sizes=True,
+        config=config,
+        trust_remote_code=True,
+        **_common_load_kwargs(training_args, bnb_config=bnb_config),
+    )
+    return model, config, Model
+
+
+# =============================================================================
+# Data module
+# =============================================================================
+
+def build_data_module(known, tokenizer, data_args, training_args, frontend_delimiters):
+    if known.objective in ("dpo"):
+        return make_dpo_data_module(
+            tokenizer=tokenizer, data_args=data_args,
+            frontend_delimiters=frontend_delimiters)
+
+    if known.objective == "secalign_dpo":
+        train_dataset = load_dataset(
+            "json", data_files=data_args.data_path_list, split="train")
+        return {"train_dataset": train_dataset, "eval_dataset": None}
+
+    # sft / struq_sft share the same lr-scaling logic
+    builder = (make_supervised_data_module if known.objective == "sft"
+               else make_supervised_data_module_orig)
+    data_module = builder(
+        tokenizer=tokenizer, data_args=data_args,
+        frontend_delimiters=frontend_delimiters,
+        downsample=getattr(training_args, "downsample", False),
+    )
+    if (not getattr(training_args, "downsample", True)
+            and getattr(training_args, "lr_scale", True)):
+        training_args.learning_rate /= data_module["train_dataset"].data_copy_count
+    return data_module
+
+
+# =============================================================================
+# Reference model (for DPO variants)
+# =============================================================================
+
+def build_ref_model(Model, model_args, config, bnb_config=None):
+    if bnb_config is not None:
+        return None
+
+    import copy
+    ref_config = copy.deepcopy(config)
+
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    ref = Model.from_pretrained(
+        model_args.model_name_or_path,
+        config=ref_config,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        trust_remote_code=True,
+        device_map={"": local_rank},
+    )
+    ref.config.use_cache = False
+    for n, p in ref.named_parameters():
+        if "intermediate_shifts" in n:
+            print(n, p.norm().item())  # should be non-trivial, not ~0
+            break
+    ref.eval()
+    for p in ref.parameters():
+        p.requires_grad = False
+    return ref
+
+
+# =============================================================================
+# Trainer dispatch
+# =============================================================================
+
+def build_trainer(known, model, ref_model, tokenizer, training_args, data_module):
+
+    is_moe = known.model_family == "qwen"
+    if is_moe:
+        cls = DPOTrainerMOE
+        return cls(model=model,
+            ref_model=ref_model,
+            processing_class=tokenizer,
+            args=training_args,
+            **data_module)
+    elif known.objective == "dpo":
+        cls = DPOTrainerOurs
+        return cls(model=model,
+                   ref_model=ref_model,
+                   processing_class=tokenizer,
+                   args=training_args,
+                   **data_module)
+    elif known.objective == "secalign_dpo":
+        return DPOTrainer(model, args=training_args,
+                          processing_class=tokenizer,
+                          **data_module)
+
+    # SFT objectives
+    if known.arch == "ise":
+        cls = SFTTrainerISE
+    elif known.arch in _FUSE_LIKE:
+        cls = SFTTrainerOurs
+    else:
+        cls = transformers.Trainer
+    return cls(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+
+
+# =============================================================================
+# Resume logic
+# =============================================================================
+
+_FALSY = {"false", "0", "no", ""}
+_TRUTHY = {"true", "1", "yes"}
+
+
+def resolve_resume(training_args, trainer):
+    """Map --resume_from_checkpoint into a value the Trainer accepts.
+
+    Returns:
+        None  -> start fresh
+        True  -> auto-resume from latest checkpoint-* in output_dir
+        path  -> resume from explicit path
+    """
+    arg = getattr(training_args, "resume_from_checkpoint", None)
+
+    # Falsy
+    if arg is None or arg is False or (isinstance(arg, str) and arg.strip().lower() in _FALSY):
+        return None
+
+    # Explicit path (anything that isn't bool True or a truthy string)
+    if not (arg is True or (isinstance(arg, str) and arg.strip().lower() in _TRUTHY)):
+        if trainer.is_world_process_zero():
+            logger.info(f"[resume] Resuming from explicit checkpoint path: {arg}")
+        return arg
+
+    # Auto-detect latest under output_dir
+    out = training_args.output_dir
+    ckpts = []
+    if os.path.isdir(out):
+        for d in os.listdir(out):
+            if d.startswith("checkpoint-") and os.path.isdir(os.path.join(out, d)):
+                try:
+                    ckpts.append((int(d.split("-")[1]), d))
+                except ValueError:
+                    pass
+    if not ckpts:
+        if trainer.is_world_process_zero():
+            logger.info(f"[resume] No checkpoint-* found in {out}; starting fresh.")
+        return None
+
+    if trainer.is_world_process_zero():
+        logger.info(f"[resume] Auto-resuming from latest checkpoint: {max(ckpts)[1]}")
+    return True
+
+
+# =============================================================================
+# Main
+# =============================================================================
 
 def main(argv: Optional[List[str]] = None):
-    # Stage 1: route by objective/arch
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--objective", choices=["dpo", "sft", "secalign_dpo", "struq_sft", "air_dpo"], required=True)
-    parser.add_argument("--model-family", choices=["llama", "mistral", "qwen"], required=False, default="base")
-    parser.add_argument("--arch", required=True, choices=["base", "fuse", "nofuse", "concatfuse", "embeddingshift", "ise", "possep", "air"])
-    known, remaining = parser.parse_known_args(argv)
-
-    # Stage 2: parse HF dataclasses per flow
-    if known.objective == "dpo":
-        hf_parser = transformers.HfArgumentParser((ModelArguments, DataArguments, DPOArgsDRIP, AttackArguments))
-        model_args, data_args, training_args, attack_args = hf_parser.parse_args_into_dataclasses(remaining)
-    elif known.objective == "air_dpo":
-        hf_parser = transformers.HfArgumentParser((ModelArguments, DataArguments, DPOArgsSecAlign, AttackArguments))
-        model_args, data_args, training_args, attack_args = hf_parser.parse_args_into_dataclasses(remaining)
-    elif known.objective == "secalign_dpo":
-        hf_parser = transformers.HfArgumentParser((ModelArguments, DataArguments, DPOArgsSecAlign, AttackArguments))
-        model_args, training_args, data_args, attack_args = hf_parser.parse_args_into_dataclasses(remaining)
-    else:  # SFT
-        hf_parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments, AttackArguments))
-        model_args, data_args, training_args, attack_args = hf_parser.parse_args_into_dataclasses(remaining)
+    known, model_args, data_args, training_args, attack_args = parse_args(argv)
 
     data_args.attack = getattr(attack_args, "attack", None)
-    logger.info(f"Objective={known.objective} | Family={getattr(known, 'model_family', 'base')} | Arch={known.arch}")
+    logger.info(f"Objective={known.objective} | Family={known.model_family} | Arch={known.arch}")
+    if known.use_qlora:
+        logger.info(f"[QLoRA] enabled with {known.qlora_bits}-bit quantization")
     print("\n\n" + training_args.output_dir + "\n\n")
 
-    # ------------------
-    # Create tokenizer
-    # ------------------
+    # ---- QLoRA config (None if disabled) ----
+    bnb_config = build_bnb_config(known.qlora_bits) if known.use_qlora else None
+
+    # ---- Tokenizer ----
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=getattr(training_args, "cache_dir", None),
@@ -256,251 +492,174 @@ def main(argv: Optional[List[str]] = None):
     )
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
-    frontend_delimiters = (data_args.attack or "").split("_")[0] if getattr(data_args, "attack", None) else ""
+    frontend_delimiters = (data_args.attack or "").split("_")[0] if data_args.attack else ""
 
-    # ------------------
-    # Create model
-    # ------------------
-    if known.arch == "base" or known.objective in ("secalign_dpo", "struq_sft"):
-        config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path)
-        model = transformers.AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=getattr(training_args, "cache_dir", None),
-            config=config,
-            low_cpu_mem_usage=True,        # init on meta device, save ~16GB CPU RAM/rank
-            torch_dtype=torch.bfloat16,    # avoid fp32 intermediate copy
-        )
-        special_tokens_dict = dict()
-        special_tokens_dict["pad_token"] = DEFAULT_TOKENS.get('pad_token', tokenizer.pad_token)
-        special_tokens_dict["eos_token"] = DEFAULT_TOKENS.get('eos_token', tokenizer.eos_token)
-        special_tokens_dict["bos_token"] = DEFAULT_TOKENS.get('bos_token', tokenizer.bos_token)
-        special_tokens_dict["unk_token"] = DEFAULT_TOKENS.get('unk_token', tokenizer.unk_token)
-        special_tokens_dict["additional_special_tokens"] = SPECIAL_DELM_TOKENS
-        smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict,
-                                             tokenizer=tokenizer,
-                                             model=model)
+    # ---- Model ----
+    use_base_path = (known.arch == "base"
+                     or known.objective in ("secalign_dpo", "struq_sft"))
+    if use_base_path:
+        model, config = build_base_model(
+            model_args, training_args, tokenizer, bnb_config=bnb_config)
+        Model = None  # ref model construction skipped on this path
     else:
-        if known.model_family == "llama":
-            Cfg, Model = pick_llama_model(known.arch)
-        elif known.model_family == "mistral":
-            Cfg, Model = pick_mistral_model(known.arch)
-        elif known.model_family == "qwen":
-            Cfg, Model = pick_qwen_model(known.arch)
-        else:
-            raise ValueError(f"Unsupported model-family: {known.model_family}")
+        model, config, Model = build_custom_model(
+            known, model_args, training_args, tokenizer, frontend_delimiters,
+            bnb_config=bnb_config)
 
-        config = Cfg.from_pretrained(model_args.model_name_or_path)
-        if known.arch == "air":
-            config.apply_intermediate_shifts = True
-        num_labels = len(DELIMITERS[frontend_delimiters])
-        if num_labels == 4:
-            set_delimiter_ids_in_config(config, tokenizer,
-                                        inst_delm=DELIMITERS[frontend_delimiters][1],
-                                        data_delm=DELIMITERS[frontend_delimiters][2],
-                                        response_delm=DELIMITERS[frontend_delimiters][3],
-                                        num_labels=num_labels)
-        else:
-            set_delimiter_ids_in_config(config, tokenizer,
-                                        inst_delm=DELIMITERS[frontend_delimiters][0],
-                                        data_delm=DELIMITERS[frontend_delimiters][1],
-                                        response_delm=DELIMITERS[frontend_delimiters][-1],
-                                        num_labels=num_labels)
-        model = Model.from_pretrained(
-            model_args.model_name_or_path,
-            ignore_mismatched_sizes=True,
-            config=config,
-            low_cpu_mem_usage=True,        # init on meta device, save ~16GB CPU RAM/rank
-            torch_dtype=torch.bfloat16,    # avoid fp32 intermediate copy
+    # ---- Trainable params ----
+    if known.use_qlora:
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=False,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
         )
+        model = get_peft_model(model, build_lora_config(known.objective, known.arch, known.model_family))
 
-    if known.arch in SHIFTS_ONLY_ARCHES:
-        freeze_base_train_shifts(model)
+    elif known.arch == "air":
+        model = freeze_base_train_shifts(model, "intermediate_shifts")
     else:
-        lora_config = build_lora_config(model, known.objective, known.arch)
-        model = get_peft_model(model, lora_config)
+        model = get_peft_model(model, build_lora_config(known.objective, known.arch, known.model_family))
 
-    # ------------------
-    # Data module
-    # ------------------
-    if known.objective == "dpo":
-        data_module = make_dpo_data_module(tokenizer=tokenizer,
-                                           data_args=data_args,
-                                           frontend_delimiters=frontend_delimiters)
-    elif known.objective in ["secalign_dpo", "air_dpo"]:
-        train_dataset = load_dataset('json',
-                                     data_files=data_args.data_path_list,
-                                     split="train")
-        data_module = {"train_dataset": train_dataset, "eval_dataset": None}
-    elif known.objective == "sft":
-        data_module = make_supervised_data_module(tokenizer=tokenizer,
-                                                  data_args=data_args,
-                                                  frontend_delimiters=frontend_delimiters,
-                                                  downsample=getattr(training_args, "downsample", False))
-        if not getattr(training_args, "downsample", True) and getattr(training_args, "lr_scale", True):
-            training_args.learning_rate /= data_module["train_dataset"].data_copy_count
-    else:  # struq_sft
-        data_module = make_supervised_data_module_orig(tokenizer=tokenizer,
-                                                       data_args=data_args,
-                                                       frontend_delimiters=frontend_delimiters,
-                                                       downsample=getattr(training_args, "downsample", False))
-        if not getattr(training_args, "downsample", True) and getattr(training_args, "lr_scale", True):
-            training_args.learning_rate /= data_module["train_dataset"].data_copy_count
+    for n, p in model.named_parameters():
+        if any(k in n for k in ["deinstruction_shift"]):
+            p.requires_grad = True
+            p.data = p.data.to(torch.bfloat16)  # ensure trainable dtype
 
-    # Optional window attribute
-    if hasattr(model_args, "window_size") and getattr(model_args, "window_size", 0) > 0 and hasattr(model.config, "window"):
+    # ---- Data ----
+    data_module = build_data_module(
+        known, tokenizer, data_args, training_args, frontend_delimiters)
+
+    if (getattr(model_args, "window_size", 0) > 0
+            and hasattr(model.config, "window")):
         model.config.window = model_args.window_size
 
+    # ---- Trainer (with ref model for DPO) ----
+    needs_ref = known.objective in ("dpo")
+    ref_model = (build_ref_model(Model, model_args, config, bnb_config=bnb_config)
+                 if needs_ref else None)
+    trainer = build_trainer(
+        known, model, ref_model, tokenizer, training_args, data_module)
 
-    # ------------------
-    # Trainer selection
-    # ------------------
-    if known.objective == "dpo":
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-
-        ref_model = Model.from_pretrained(
-            model_args.model_name_or_path,
-            config=config,
-            quantization_config=bnb_config,
-            low_cpu_mem_usage=True,        # avoid fp32 intermediate copy in CPU
-            device_map={"": int(os.environ.get("LOCAL_RANK", "0"))},  # load straight to this rank's GPU
-        )
-        ref_model.config.use_cache = False  # no KV cache buffer for ref forward
-        ref_model.eval()
-        for p in ref_model.parameters():
-            p.requires_grad = False
-
-        trainer = DPOTrainerOurs(
-            model=model,
-            ref_model=ref_model,
-            processing_class=tokenizer,
-            args=training_args,
-            **data_module
-        )
-    elif known.objective == "air_dpo":
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-
-        ref_model = Model.from_pretrained(
-            model_args.model_name_or_path,
-            config=config,
-            quantization_config=bnb_config,
-            low_cpu_mem_usage=True,        # avoid fp32 intermediate copy in CPU
-            device_map={"": int(os.environ.get("LOCAL_RANK", "0"))},  # load straight to this rank's GPU
-        )
-        ref_model.config.use_cache = False  # no KV cache buffer for ref forward
-        ref_model.eval()
-        for p in ref_model.parameters():
-            p.requires_grad = False
-
-        trainer = DPOTrainerAIR(
-            model=model,
-            ref_model=ref_model,
-            args=training_args,
-            processing_class=tokenizer,
-            **data_module
-        )
-    elif known.objective == "secalign_dpo":
-        trainer = DPOTrainer(
-            model,
-            args=training_args,
-            processing_class=tokenizer,
-            **data_module,
-        )
-    else:  # SFT objective
-        if known.arch in ("ise",):
-            trainer_class = SFTTrainerISE
-        elif known.arch in ("fuse", "nofuse", "concatfuse", "embeddingshift"):
-            trainer_class = SFTTrainerOurs
-        else:
-            trainer_class = transformers.Trainer
-        trainer = trainer_class(
-            model=model,
-            tokenizer=tokenizer,
-            args=training_args,
-            **data_module
-        )
-
-    # Debug: print trainable params summary (PEFT path only; shifts-only
-    # already prints via freeze_base_train_shifts).
     if hasattr(trainer.model, "print_trainable_parameters"):
         print("=== Trainable params (PEFT) ===")
         trainer.model.print_trainable_parameters()
 
-    # ------------------
-    # Train
-    # ------------------
-    # Resume support: honor --resume_from_checkpoint from CLI.
-    #   - If a path is given, resume from that exact checkpoint dir.
-    #   - If "True"/True is given, auto-detect the latest checkpoint in output_dir.
-    #   - Otherwise (None / False / "False"), start fresh.
-    resume_arg = getattr(training_args, "resume_from_checkpoint", None)
+    if hasattr(trainer, "accelerator") and hasattr(trainer.model, "_set_static_graph"):
+        pass  # HF Trainer wraps later; use the callback below instead
 
-    def _truthy(v):
-        return isinstance(v, str) and v.strip().lower() in ("true", "1", "yes")
+    # ---- Sanity check: print one sample before training ----
+    if trainer.is_world_process_zero():
+        print("\n" + "=" * 80)
+        print("SANITY CHECK: one sample before training")
+        print("=" * 80)
 
-    if resume_arg is None or resume_arg is False or (isinstance(resume_arg, str) and resume_arg.strip().lower() in ("false", "0", "no", "")):
-        resume_value = None
-    elif resume_arg is True or _truthy(resume_arg):
-        # Auto-detect: let Trainer find latest checkpoint-* under output_dir.
-        ckpts = []
-        if os.path.isdir(training_args.output_dir):
-            for d in os.listdir(training_args.output_dir):
-                if d.startswith("checkpoint-") and os.path.isdir(os.path.join(training_args.output_dir, d)):
-                    try:
-                        ckpts.append((int(d.split("-")[1]), d))
-                    except ValueError:
-                        pass
-        if ckpts:
-            resume_value = True
-            latest = max(ckpts)[1]
-            if trainer.is_world_process_zero():
-                logger.info(f"[resume] Auto-resuming from latest checkpoint: {latest}")
-        else:
-            resume_value = None
-            if trainer.is_world_process_zero():
-                logger.info(f"[resume] --resume_from_checkpoint=True but no checkpoint-* found in "
-                            f"{training_args.output_dir}; starting fresh.")
-    else:
-        # Treat as explicit path
-        resume_value = resume_arg
-        if trainer.is_world_process_zero():
-            logger.info(f"[resume] Resuming from explicit checkpoint path: {resume_value}")
+        # 1. Config sanity
+        cfg = getattr(model, "config", config)
+        print(f"\n[Config]")
+        print(f"  num_labels       = {getattr(cfg, 'num_labels', '?')}")
+        print(f"  instruct_label   = {getattr(cfg, 'instruct_label', '?')}")
+        print(f"  data_label       = {getattr(cfg, 'data_label', '?')}")
+        print(f"  response_label   = {getattr(cfg, 'response_label', '?')}")
+        print(f"  num_experts      = {getattr(cfg, 'num_experts', '?')}  (expect 128 for Qwen3-30B-A3B)")
+        print(f"  inst_delm_ids    = {getattr(cfg, 'inst_delm_ids', None)}")
+        print(f"  data_delm_ids    = {getattr(cfg, 'data_delm_ids', None)}")
+        print(f"  response_delm_ids= {getattr(cfg, 'response_delm_ids', None)}")
+        print(f"  residual         = {getattr(cfg, 'residual', '?')}")
+        print(f"  bit_flip         = {getattr(cfg, 'bit_flip', '?')}")
 
-    trainer.train(resume_from_checkpoint=resume_value)
+        # 2. Trainable params summary
+        print(f"\n[Trainable params]")
+        trainable = 0
+        total = 0
+        key_params = []
+        for n, p in model.named_parameters():
+            total += p.numel()
+            if p.requires_grad:
+                trainable += p.numel()
+                if any(k in n for k in ["deinstruction_shift", "residual_weight"]):
+                    key_params.append((n, p.numel(), p.dtype, p.requires_grad))
+        print(f"  trainable: {trainable:,} / {total:,} ({100 * trainable / total:.4f}%)")
+        print(f"  key params:")
+        for n, num, dt, rg in key_params:
+            print(f"    {n}  numel={num:,}  dtype={dt}  requires_grad={rg}")
 
+        # 3. Fetch one batch from the dataloader
+        try:
+            dl = trainer.get_train_dataloader()
+            batch = next(iter(dl))
+        except Exception as e:
+            print(f"\n[Batch] Failed to fetch batch: {e}")
+            batch = None
+
+        if batch is not None:
+            print(f"\n[Batch keys] {list(batch.keys())}")
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    print(f"  {k}: shape={tuple(v.shape)}  dtype={v.dtype}")
+
+            # Decode the first chosen sample
+            c_ids = batch["chosen_input_ids"][0]
+            c_ex = batch["chosen_expert_labels"][0]
+            c_am = batch["chosen_attention_mask"][0]
+            valid_len = int(c_am.sum().item())
+
+            print(f"\n[Chosen sample 0] valid_len={valid_len}")
+            text = tokenizer.decode(c_ids[:valid_len], skip_special_tokens=False)
+            print(f"--- decoded prompt+response ---")
+            print(text[:2000] + ("...[TRUNCATED]" if len(text) > 2000 else ""))
+
+            # Expert label distribution
+            print(f"\n[Expert label distribution (chosen[0], valid tokens only)]")
+            ex_valid = c_ex[:valid_len]
+            for lab in range(getattr(cfg, "num_labels", 4)):
+                cnt = int((ex_valid == lab).sum().item())
+                pct = 100 * cnt / valid_len if valid_len else 0
+                print(f"  label {lab}: {cnt} tokens ({pct:.1f}%)")
+
+            # Print first few transition tokens to verify boundaries
+            print(f"\n[Label transitions (first 5)]")
+            transitions = []
+            for i in range(1, valid_len):
+                if c_ex[i] != c_ex[i - 1]:
+                    transitions.append(i)
+                if len(transitions) >= 5:
+                    break
+            for pos in transitions:
+                prev_lab = int(c_ex[pos - 1].item())
+                new_lab = int(c_ex[pos].item())
+                ctx = tokenizer.decode(c_ids[max(0, pos - 3):pos + 5])
+                print(f"  pos={pos}  {prev_lab} -> {new_lab}  ctx={repr(ctx)}")
+
+            # Sanity assertions
+            print(f"\n[Sanity checks]")
+            unique_labels = set(c_ex[:valid_len].tolist())
+            expected = set(range(getattr(cfg, "num_labels", 4)))
+            ok = unique_labels == expected
+            print(f"  all {len(expected)} labels present: {ok}  (got {sorted(unique_labels)})")
+            if not ok:
+                print(f"  ⚠️  MISSING LABELS: {expected - unique_labels}")
+                print(f"  ⚠️  deinstruction_shift may not be triggered if data_label is missing!")
+
+        print("=" * 80 + "\n")
+
+    # Sync all ranks before continuing
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+    # ---- Train ----
+    trainer.model.enable_input_require_grads()
+    trainer.train(resume_from_checkpoint=resolve_resume(training_args, trainer))
+
+    # ---- Save ----
     if trainer.is_world_process_zero():
         logger.info("Training done. Saving...")
-
-    # ------------------
-    # Save
-    #   shifts-only: save only the shifts tensors (DDP, no FSDP gather)
-    #   PEFT path: standard trainer.save_model() + state
-    # ------------------
-    if known.arch in SHIFTS_ONLY_ARCHES:
-        save_shifts_only(
-            model=trainer.model,
-            output_dir=training_args.output_dir,
-            tokenizer=tokenizer,
-            is_main_process=trainer.is_world_process_zero(),
-        )
-    else:
-        trainer.save_model(output_dir=training_args.output_dir)
-        trainer.save_state()
-        if trainer.is_world_process_zero():
-            tokenizer.save_pretrained(training_args.output_dir)
-            base_config = getattr(trainer.model, "base_model", trainer.model).config
-            base_config.save_pretrained(training_args.output_dir)
+    trainer.save_model(output_dir=training_args.output_dir)
+    trainer.save_state()
+    if trainer.is_world_process_zero():
+        tokenizer.save_pretrained(training_args.output_dir)
+        base_config = getattr(trainer.model, "base_model", trainer.model).config
+        base_config.save_pretrained(training_args.output_dir)
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("TRANSFORMERS_CACHE", "/mnt/sda/hf_cache")
     main()
