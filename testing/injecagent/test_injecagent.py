@@ -11,14 +11,11 @@ import torch
 from nltk import ngrams
 from collections import Counter
 from transformers import pipeline
-from data_generation.data_loader import jdump, jload, PROMPT_FORMAT, DELIMITERS
+from data_generation.sft_data_loader import jdump, jload, PROMPT_FORMAT, DELIMITERS
 from copy import deepcopy
 import numpy as np
 import argparse
-from testing.test import load_full_model, test_model_output, recursive_filter
-# os.environ['HTTP_PROXY']  = 'http://127.0.0.1:7890'
-# os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
-os.environ['TRANSFORMERS_CACHE'] = "/mnt/sda/hf_cache"
+from testing.test import load_full_model, test_model_output
 
 SYS_PROMPT = """
 You are a helpful AI Agent who can utilize a lot of external tools to answer User's questions or help User accomplish tasks following their instructions.
@@ -221,7 +218,7 @@ def get_score(output_files):
 
 def get_tool_dict(gpt_format=False):
     tool_dict = {}
-    with open('datasets/injecagent/tools.json', 'r') as f:
+    with open('./datasets/injecagent/tools.json', 'r') as f:
         toolkits = json.load(f)
         for toolkit in toolkits:
             kit_name = toolkit['toolkit']
@@ -673,11 +670,6 @@ if __name__ == "__main__":
     template = dict(PROMPT_FORMAT[frontend_delimiters])
     delm = DELIMITERS[frontend_delimiters]
     if len(delm) == 4:
-        # 4-role InjecAgent template:
-        #   system = agent system prompt (trusted, label 0)
-        #   user   = task instruction    (trusted, label 1)
-        #   tool   = scratchpad/obs      (untrusted data, label 2)
-        #   assistant                    (response, label 3)
         template["prompt_input_tool"] = (
             delm[0] + "\n{instruction}\n\n"
             + delm[1] + "\n{user}\n\n"

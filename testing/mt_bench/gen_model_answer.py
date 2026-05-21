@@ -12,7 +12,7 @@ import shortuuid
 import torch
 from tqdm import tqdm
 from fastchat.llm_judge.common import load_questions, temperature_config
-from data_generation.data_loader import jload, _tokenize_fn, smart_tokenizer_and_embedding_resize
+from data_generation.sft_data_loader import jload, _tokenize_fn, smart_tokenizer_and_embedding_resize
 from config import DELIMITERS, DEFAULT_SYSTEM_PROMPT
 from testing.test_gcg import CustomConversation
 from testing.test import load_full_model

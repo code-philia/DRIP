@@ -12,7 +12,6 @@ from datasets import load_dataset
 from testing.test import load_full_model, test_model_output, apply_testtime_defense
 from config import PROMPT_FORMAT, DEFAULT_SYSTEM_PROMPT
 
-os.environ['TRANSFORMERS_CACHE'] = "/mnt/sda/hf_cache"
 
 # All 57 MMLU subjects
 ALL_SUBJECTS = [
@@ -235,12 +234,15 @@ if __name__ == "__main__":
                         help='Max samples per subject (-1 = all)')
     parser.add_argument('--customized_model_class', type=str, default='',
                         help='Custom model class name')
+    parser.add_argument('--load_as_adapter', action='store_true')
+
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
 
     model, tokenizer, frontend_delimiters, _ = load_full_model(
         args.model_name_or_path,
         customized_model_class=args.customized_model_class,
+        load_as_adapter=args.load_as_adapter,
     )
     from config import DELIMITERS
     _delm = DELIMITERS[frontend_delimiters]

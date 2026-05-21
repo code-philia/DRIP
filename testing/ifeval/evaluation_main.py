@@ -1,6 +1,7 @@
 import os
 from typing import Sequence
-
+import nltk
+nltk.download('punkt_tab')
 from absl import app
 from absl import flags
 from absl import logging
