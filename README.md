@@ -46,13 +46,25 @@ Export the visible devices accordingly:
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
 ```
 
-
 # Data Curation
- 
-Data curation is already done. The curated dataset is uploaded at [`datasets/sep/sep_data_cleaned_dpo_gpt.json`](./datasets/sep/sep_data_cleaned_dpo_gpt.json).
- 
-To generate the DRIP training data from scratch, see [`data_generation/README.md`](./data_generation/README.md).
- 
+
+The curated DRIP training and evaluation data is archived on Zenodo
+(DOI: [10.5281/zenodo.20325769](https://doi.org/10.5281/zenodo.20325769)).
+
+Download and extract it into the repository root:
+
+```bash
+wget -O datasets.zip "https://zenodo.org/records/20325769/files/datasets.zip?download=1"
+unzip datasets.zip
+mv datasets1/ datasets/ 
+```
+
+This restores `datasets/sep/sep_data_cleaned_dpo_gpt.json` and the other
+curated files used by the training and evaluation scripts.
+
+To regenerate the DRIP training data from scratch instead, see
+[`data_generation/README.md`](./data_generation/README.md).
+
 ---
 
 # Training
