@@ -21,7 +21,6 @@ class LlamaAIRConfig(LlamaConfig):
         self.apply_input_shifts        = kwargs.get('apply_input_shifts', True)
         self.apply_intermediate_shifts = kwargs.get('apply_intermediate_shifts', True)
         self.num_blocks_with_shifts    = kwargs.get('num_blocks_with_shifts', 1)
-        self.num_experts               = kwargs.get('num_experts', 3)
         self.d_gap                     = kwargs.get('d_gap', 512)
         self.bit_flip                  = kwargs.get('bit_flip', True)
         # Delimiter token IDs for runtime expert_label computation
@@ -32,7 +31,7 @@ class LlamaAIRConfig(LlamaConfig):
         self.instruct_label    = kwargs.get('instruct_label', 0 if self.num_labels == 3 else 1)
         self.data_label        = kwargs.get('data_label',     1 if self.num_labels == 3 else 2)
         self.response_label    = kwargs.get('response_label', self.num_labels - 1)
-        assert self.num_experts > 0, "num_experts must be > 0"
+        assert self.num_labels > 0, "num_labels must be > 0"
 
 
 class LlamaModel(transformers.LlamaModel):
@@ -40,7 +39,7 @@ class LlamaModel(transformers.LlamaModel):
         super().__init__(config)
         self.apply_intermediate_shifts = config.apply_intermediate_shifts
         self.intermediate_shifts = nn.Embedding(
-            (config.num_hidden_layers + 1) * config.num_experts,
+            (config.num_hidden_layers + 1) * config.num_labels,
             config.hidden_size,
         )
         self.num_blocks_with_shifts = config.num_blocks_with_shifts
@@ -107,7 +106,7 @@ class LlamaModel(transformers.LlamaModel):
 
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if self.apply_intermediate_shifts:
-                idx = layer_idx * self.config.num_experts + expert_labels
+                idx = layer_idx * self.config.num_labels + expert_labels
                 hidden_states = hidden_states + self.intermediate_shifts(idx)
 
             hidden_states = decoder_layer(
@@ -121,7 +120,7 @@ class LlamaModel(transformers.LlamaModel):
             )
 
         if self.apply_intermediate_shifts:
-            idx = self.config.num_hidden_layers * self.config.num_experts + expert_labels
+            idx = self.config.num_hidden_layers * self.config.num_labels + expert_labels
             hidden_states = hidden_states + self.intermediate_shifts(idx)
 
         hidden_states = self.norm(hidden_states)

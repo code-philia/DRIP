@@ -26,7 +26,7 @@ def _get_last_indices(label_index: int, expert_labels: torch.LongTensor) -> torc
 class LlamaDRIPConfig(LlamaConfig):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.num_experts = kwargs.get('num_experts', 3)
+        self.num_labels = kwargs.get('num_labels', 3)
         self.residual = kwargs.get('residual', True)
         self.bit_flip = kwargs.get('bit_flip', True)
 
@@ -189,7 +189,7 @@ class LlamaModelEmbeddingShift(transformers.LlamaModel):
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
         self.config = config
-        self.deinstruction_shift = nn.Embedding(config.num_experts, config.hidden_size) # embedding
+        self.deinstruction_shift = nn.Embedding(config.num_labels, config.hidden_size) # embedding
         self.instruct_label  = 0
         self.data_label = 1
         self.residual_weight = nn.Parameter(torch.tensor([-1.0986])) # 0.5 weight assigned to the last instruction token

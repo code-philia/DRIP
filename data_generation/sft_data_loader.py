@@ -150,6 +150,78 @@ def find_last_occurrence(seq, separator):
     return last_index  # Return -1 if the separator is not found, or the last match index if found
 
 
+# def compute_expert_labels_from_input_ids(
+#     input_ids: torch.LongTensor,      # (B, L)
+#     data_delm_ids: List[int],
+#     response_delm_ids: List[int],
+#     inst_delm_ids: Optional[List[int]] = None,
+#     num_labels: int = 4,
+# ) -> torch.LongTensor:
+#     """
+#     Compute expert_labels on-the-fly from input_ids, replicating
+#     compute_expert_labels() from struq.py — but batched and on-device.
+#
+#     Label scheme (num_labels=3):
+#         0 = system instruction  (default)
+#         1 = data input          (after first data delimiter)
+#         2 = response            (after last response delimiter)
+#
+#     Label scheme (num_labels=4):
+#         0 = preamble/padding    (default)
+#         1 = user instruction    (after first inst delimiter)
+#         2 = data input          (after first data delimiter)
+#         3 = response            (after last response delimiter)
+#
+#     For decode steps (L==1), all tokens are labelled as response
+#     (label = num_labels - 1), because the model is generating and
+#     we already handled the prefill correctly.
+#     """
+#     B, L = input_ids.shape
+#     device = input_ids.device
+#     response_label = num_labels - 1
+#
+#     # Decode step: single new token, always response
+#     if L == 1:
+#         return torch.full((B, 1), fill_value=response_label, dtype=torch.long, device=device)
+#
+#     data_sep = torch.tensor(data_delm_ids,     dtype=torch.long, device=device)
+#     resp_sep = torch.tensor(response_delm_ids, dtype=torch.long, device=device)
+#     inst_sep = (torch.tensor(inst_delm_ids, dtype=torch.long, device=device)
+#                 if inst_delm_ids is not None else None)
+#
+#     expert_labels = torch.zeros(B, L, dtype=torch.long, device=device)
+#
+#     for b in range(B):
+#         seq = input_ids[b]  # (L,)
+#
+#         if num_labels == 3:
+#             data_pos = find_first_occurrence(seq, data_sep)
+#             if data_pos != -1:
+#                 expert_labels[b, data_pos:] = 1
+#
+#             resp_pos = find_last_occurrence(seq, resp_sep)
+#             if resp_pos != -1:
+#                 expert_labels[b, resp_pos:] = 2
+#
+#         elif num_labels == 4:
+#             if inst_sep is not None:
+#                 inst_pos = find_first_occurrence(seq, inst_sep)
+#                 if inst_pos != -1:
+#                     expert_labels[b, inst_pos:] = 1
+#
+#             data_pos = find_first_occurrence(seq, data_sep)
+#             if data_pos != -1:
+#                 expert_labels[b, data_pos:] = 2
+#
+#             resp_pos = find_last_occurrence(seq, resp_sep)
+#             if resp_pos != -1:
+#                 expert_labels[b, resp_pos:] = 3
+#
+#         else:
+#             raise ValueError(f"num_labels must be 3 or 4, got {num_labels}")
+#
+#     return expert_labels
+
 def compute_expert_labels_from_input_ids(
     input_ids: torch.LongTensor,      # (B, L)
     data_delm_ids: List[int],
@@ -158,71 +230,61 @@ def compute_expert_labels_from_input_ids(
     num_labels: int = 4,
 ) -> torch.LongTensor:
     """
-    Compute expert_labels on-the-fly from input_ids, replicating
-    compute_expert_labels() from struq.py — but batched and on-device.
+    Multi-segment version: scans the whole sequence and switches the running
+    label at EVERY delimiter occurrence (not just first/last). Each delimiter
+    and the tokens after it (until the next delimiter) get that segment's label.
 
-    Label scheme (num_labels=3):
-        0 = system instruction  (default)
-        1 = data input          (after first data delimiter)
-        2 = response            (after last response delimiter)
+    Single-turn equivalence: when there is exactly one inst / one data / one
+    response delimiter in order, this produces the SAME labels as the original
+    first/last-occurrence version. Verify with the provided test before use.
 
     Label scheme (num_labels=4):
-        0 = preamble/padding    (default)
-        1 = user instruction    (after first inst delimiter)
-        2 = data input          (after first data delimiter)
-        3 = response            (after last response delimiter)
-
-    For decode steps (L==1), all tokens are labelled as response
-    (label = num_labels - 1), because the model is generating and
-    we already handled the prefill correctly.
+        0 = preamble/padding (before any delimiter)
+        1 = instruction  (after inst delimiter)
+        2 = data         (after data delimiter)
+        3 = response     (after response delimiter)
     """
     B, L = input_ids.shape
     device = input_ids.device
     response_label = num_labels - 1
 
-    # Decode step: single new token, always response
     if L == 1:
-        return torch.full((B, 1), fill_value=response_label,
-                          dtype=torch.long, device=device)
+        return torch.full((B, 1), response_label, dtype=torch.long, device=device)
 
-    data_sep = torch.tensor(data_delm_ids,     dtype=torch.long, device=device)
-    resp_sep = torch.tensor(response_delm_ids, dtype=torch.long, device=device)
-    inst_sep = (torch.tensor(inst_delm_ids, dtype=torch.long, device=device)
-                if inst_delm_ids is not None else None)
+    instruct_label = 0 if num_labels == 3 else 1
+    data_label     = 1 if num_labels == 3 else 2
 
-    expert_labels = torch.zeros(B, L, dtype=torch.long, device=device)
+    # (delimiter_ids, label_for_segment). Longest first so a delimiter that is a
+    # prefix of another doesn't match prematurely.
+    delms = []
+    if inst_delm_ids is not None and num_labels == 4:
+        delms.append((list(inst_delm_ids), instruct_label))
+    delms.append((list(data_delm_ids), data_label))
+    delms.append((list(response_delm_ids), response_label))
+    delms.sort(key=lambda x: -len(x[0]))
+
+    labels = torch.zeros(B, L, dtype=torch.long, device=device)
 
     for b in range(B):
-        seq = input_ids[b]  # (L,)
+        seq = input_ids[b].tolist()
+        cur = 0
+        i = 0
+        while i < L:
+            matched = False
+            for delm_ids, lab in delms:
+                n = len(delm_ids)
+                if i + n <= L and seq[i:i + n] == delm_ids:
+                    cur = lab
+                    for j in range(i, i + n):
+                        labels[b, j] = cur
+                    i += n
+                    matched = True
+                    break
+            if not matched:
+                labels[b, i] = cur
+                i += 1
 
-        if num_labels == 3:
-            data_pos = find_first_occurrence(seq, data_sep)
-            if data_pos != -1:
-                expert_labels[b, data_pos:] = 1
-
-            resp_pos = find_last_occurrence(seq, resp_sep)
-            if resp_pos != -1:
-                expert_labels[b, resp_pos:] = 2
-
-        elif num_labels == 4:
-            if inst_sep is not None:
-                inst_pos = find_first_occurrence(seq, inst_sep)
-                if inst_pos != -1:
-                    expert_labels[b, inst_pos:] = 1
-
-            data_pos = find_first_occurrence(seq, data_sep)
-            if data_pos != -1:
-                expert_labels[b, data_pos:] = 2
-
-            resp_pos = find_last_occurrence(seq, resp_sep)
-            if resp_pos != -1:
-                expert_labels[b, resp_pos:] = 3
-
-        else:
-            raise ValueError(f"num_labels must be 3 or 4, got {num_labels}")
-
-    return expert_labels
-
+    return labels
 
 
 def _tokenize_fn(strings, tokenizer,

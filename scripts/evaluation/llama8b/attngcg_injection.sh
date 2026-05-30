@@ -29,6 +29,9 @@ case "$MODEL_PATH" in
     *instfuse*)
         EXTRA_FLAGS="--customized_model_class LlamaForCausalLMDRIP --pass_expert_labels"
         ;;
+    *drip*)
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMDRIP --pass_expert_labels"
+        ;;
     *ise*)
         EXTRA_FLAGS="--customized_model_class LlamaForCausalLMISE --pass_expert_labels"
         ;;

@@ -6,7 +6,7 @@ from modeling.llama_drip import (
     compute_expert_labels_from_input_ids,
     CausalLMFuseOutputWithPast,
     set_delimiter_ids_in_config,
-    _get_first_indices
+    _get_last_segment_start
 )
 from transformers.utils import logging
 from typing import Union, Optional, List, Dict, Any
@@ -24,7 +24,6 @@ logger = logging.get_logger(__name__)
 class MistralDRIPConfig(MistralConfig):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.num_experts       = kwargs.get('num_experts', 4)
         self.residual          = kwargs.get('residual', True)
         self.bit_flip          = kwargs.get('bit_flip', True)
         self.data_delm_ids     = kwargs.get('data_delm_ids', None)      # List[int]
@@ -123,11 +122,12 @@ class MistralModel(transformers.MistralModel):
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if self.config.bit_flip and layer_idx == 0:
                 if expert_labels is not None:
-                    inst_mask_2d = (expert_labels == self.data_label)  # B, L
-                    inst_mask_3d = inst_mask_2d.unsqueeze(-1).expand_as(hidden_states)
-                    shifts = self.deinstruction_shift(hidden_states) # why having different shifts for different samples?
-                    hidden_states  = torch.where(
-                        inst_mask_3d,
+                    data_mask_2d = (expert_labels == self.data_label)  # B, L
+                    data_mask_3d = data_mask_2d.unsqueeze(-1).expand_as(hidden_states)
+                    shifts = self.deinstruction_shift(
+                        hidden_states)  # why having different shifts for different samples?
+                    hidden_states = torch.where(
+                        data_mask_3d,
                         shifts + hidden_states,
                         hidden_states
                     )
@@ -237,7 +237,8 @@ class MistralForCausalLMDRIP(transformers.MistralForCausalLM):
                     past_inst_hidden_states = last_inst.clone().detach()
 
                     # First token of response region
-                first_resp_indices = _get_first_indices(self.response_label, expert_labels)
+                # first_resp_indices = _get_first_indices(self.response_label, expert_labels)
+                first_resp_indices = _get_last_segment_start(self.response_label, expert_labels)
                 # Last token of the response delimiter = first + (delimiter_length - 1)
                 resp_delm_len = len(self.config.response_delm_ids)  # stored in config
                 end_indices = (first_resp_indices + resp_delm_len - 1).clamp(max=expert_labels.shape[1] - 1)

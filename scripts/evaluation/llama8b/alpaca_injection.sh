@@ -51,6 +51,9 @@ case "$MODEL_PATH" in
     *instfuse*)
         EXTRA_FLAGS="--customized_model_class LlamaForCausalLMDRIP"
         ;;
+    *drip*)
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMDRIP"
+        ;;
     *ise*)
         EXTRA_FLAGS="--customized_model_class LlamaForCausalLMISE"
         ;;

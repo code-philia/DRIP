@@ -42,11 +42,62 @@ def _get_first_indices(label_index: int, expert_labels: torch.LongTensor) -> tor
                                 first_indices)
     return first_indices
 
+def _get_last_segment_start(label_index: int, expert_labels: torch.LongTensor) -> torch.LongTensor:
+    """For each row, return the start index of the LAST contiguous run of
+    `label_index`. Returns -1 if the label never appears."""
+    B, L = expert_labels.shape
+    device = expert_labels.device
+    seq = torch.arange(L, device=device).unsqueeze(0)  # (1, L)
+    mask = (expert_labels == label_index)              # (B, L)
+
+    # run start: label here, not at previous position
+    prev_mask = torch.zeros_like(mask)
+    prev_mask[:, 1:] = mask[:, :-1]
+    run_start = mask & ~prev_mask                      # (B, L)
+
+    # last run start = max index among run-start positions; -1 if none
+    start = torch.where(run_start, seq, torch.full_like(seq, -1)).max(dim=1)[0]
+    return start
+
+def _last_data_segment_mask(
+    expert_labels: torch.LongTensor,   # (B, L)
+    data_label: int,
+) -> torch.BoolTensor:                  # (B, L)
+    """
+    For each row in the batch, mark only the tokens belonging to the
+    LAST contiguous run of `data_label`. All other positions are False.
+
+    Pure index/boolean ops — no Python loops, no detach, no in-place writes
+    on tensors that participate in the autograd graph.
+    """
+    B, L = expert_labels.shape
+    device = expert_labels.device
+
+    is_data = (expert_labels == data_label)                    # (B, L)
+
+    # Run boundaries: a run starts where is_data is True and the previous
+    # position is False (or position 0).
+    prev = torch.zeros_like(is_data)
+    prev[:, 1:] = is_data[:, :-1]
+    run_start = is_data & ~prev                                 # (B, L)
+
+    # Assign each token a "run id": cumulative count of run starts up to and
+    # including this position. Non-data positions get the same id as the
+    # preceding data run, but we'll mask them out separately.
+    run_id = run_start.long().cumsum(dim=1)                     # (B, L)
+
+    # Max run id per row = id of the LAST data run.
+    # Rows with no data at all have max == 0; we'll catch this with is_data.
+    max_run_id = run_id.max(dim=1, keepdim=True).values         # (B, 1)
+
+    # A position belongs to the last data run iff it is data AND its run_id
+    # equals max_run_id.
+    last_data_mask = is_data & (run_id == max_run_id)           # (B, L)
+    return last_data_mask
 
 class LlamaDRIPConfig(LlamaConfig):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.num_experts   = kwargs.get('num_experts', 4)
         self.residual      = kwargs.get('residual', True)
         self.bit_flip      = kwargs.get('bit_flip', True)
         # Delimiter token IDs stored as plain int lists so they serialise
@@ -188,13 +239,12 @@ class LlamaModel(transformers.LlamaModel):
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             # one-bit flip for First attention's input
             if self.config.bit_flip and layer_idx == 0:
-            # if self.config.bit_flip and layer_idx == self.config.num_hidden_layers-1:
                 if expert_labels is not None:
-                    inst_mask_2d = (expert_labels == self.data_label)  # B, L
-                    inst_mask_3d = inst_mask_2d.unsqueeze(-1).expand_as(hidden_states)
+                    data_mask_2d = (expert_labels == self.data_label)  # B, L
+                    data_mask_3d = data_mask_2d.unsqueeze(-1).expand_as(hidden_states)
                     shifts = self.deinstruction_shift(hidden_states) # why having different shifts for different samples?
                     hidden_states  = torch.where(
-                        inst_mask_3d,
+                        data_mask_3d,
                         shifts + hidden_states,
                         hidden_states
                     )
@@ -234,7 +284,7 @@ class LlamaModelEmbeddingShift(transformers.LlamaModel):
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
         self.config = config
-        self.deinstruction_shift = nn.Embedding(config.num_experts, config.hidden_size) # embedding
+        self.deinstruction_shift = nn.Embedding(config.num_labels, config.hidden_size) # embedding
         self.instruct_label  = config.instruct_label
         self.data_label = config.data_label
         self.residual_weight = nn.Parameter(torch.tensor([-1.0986])) # 0.5 weight assigned to the last instruction token
@@ -322,14 +372,16 @@ class LlamaModelEmbeddingShift(transformers.LlamaModel):
 
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if self.config.bit_flip and layer_idx == 0:
-                inst_mask_2d = (expert_labels == self.data_label)  # (B, L)
-                inst_mask_3d = inst_mask_2d.unsqueeze(-1).expand_as(hidden_states)  # (B, L, H)
-                shifts = self.deinstruction_shift(expert_labels)
-                hidden_states = torch.where(
-                    inst_mask_3d,
-                    hidden_states + shifts,
-                    hidden_states
-                )
+                if expert_labels is not None:
+                    data_mask_2d = (expert_labels == self.data_label)  # B, L
+                    data_mask_3d = data_mask_2d.unsqueeze(-1).expand_as(hidden_states)
+                    shifts = self.deinstruction_shift(hidden_states) # why having different shifts for different samples?
+                    hidden_states  = torch.where(
+                        data_mask_3d,
+                        shifts + hidden_states,
+                        hidden_states
+                    )
+
             hidden_states = self.shift_tap(hidden_states)
             hidden_states = decoder_layer(
                 hidden_states,
@@ -421,7 +473,8 @@ class LlamaForCausalLMDRIP(transformers.LlamaForCausalLM):
                     past_inst_hidden_states = last_inst.clone().detach()
 
                 # First token of response region
-                first_resp_indices = _get_first_indices(self.response_label, expert_labels)
+                # first_resp_indices = _get_first_indices(self.response_label, expert_labels)
+                first_resp_indices = _get_last_segment_start(self.response_label, expert_labels)
                 # Last token of the response delimiter = first + (delimiter_length - 1)
                 resp_delm_len = len(self.config.response_delm_ids)  # stored in config
                 end_indices = (first_resp_indices + resp_delm_len - 1).clamp(max=expert_labels.shape[1] - 1)
@@ -635,7 +688,8 @@ class LlamaForCausalLMConcatFuse(LlamaForCausalLMDRIP):
                     past_inst_hidden_states = last_inst.clone().detach()
 
                 # First token of response region
-                first_resp_indices = _get_first_indices(self.response_label, expert_labels)
+                # first_resp_indices = _get_first_indices(self.response_label, expert_labels)
+                first_resp_indices = _get_last_segment_start(self.response_label, expert_labels)
                 # Last token of the response delimiter = first + (delimiter_length - 1)
                 resp_delm_len = len(self.config.response_delm_ids)  # stored in config
                 end_indices = (first_resp_indices + resp_delm_len - 1).clamp(max=expert_labels.shape[1] - 1)
@@ -648,7 +702,7 @@ class LlamaForCausalLMConcatFuse(LlamaForCausalLMDRIP):
                 ], dim=-1)  # (B, 2H)
 
                 mask = torch.zeros((batch_size, length, 1), dtype=torch.bool, device=hidden_states.device)
-                mask[batch_idx, first_resp_indices, 0] = True
+                mask[batch_idx, end_indices, 0] = True
 
                 hidden_states = torch.where(mask, fused_states.unsqueeze(1), hidden_states)
 

@@ -78,21 +78,29 @@ for name, delm in DELIMITERS.items():
     if len(delm) == 4:
         # 4-role (Llama ipython): system | user_instruction | ipython/data | assistant
         PROMPT_FORMAT[name]["prompt_input"] = (
-            delm[0] + "\n" + DEFAULT_SYSTEM_PROMPT + "\n\n"
+            delm[0] + "\n{system}\n\n"
             + delm[1] + "\n{instruction}\n\n"
             + delm[2] + "\n{input}\n\n"
             + delm[3] + "\n"
         )
         PROMPT_FORMAT[name]["prompt_no_input"] = (
-            delm[0] + "\n" + DEFAULT_SYSTEM_PROMPT + "\n\n"
+            delm[0] + "\n{system}\n\n"
             + delm[1] + "\n{instruction}\n\n"
             + delm[2] + "\n\n\n"
             + delm[3] + "\n"
         )
     else:
         # 3-role (existing behaviour — also covers Mistral/Qwen TextSys variants
-        PROMPT_FORMAT[name]["prompt_input"]    = delm[0] + "\n{instruction}\n\n" + delm[1] + "\n{input}\n\n" + delm[2] + "\n"
-        PROMPT_FORMAT[name]["prompt_no_input"] = delm[0] + "\n{instruction}\n\n" + delm[1] + "\n\n\n" + delm[2] + "\n"
+        PROMPT_FORMAT[name]["prompt_input"]    = (
+                delm[0] + "\n{instruction}\n\n"
+                + delm[1] + "\n{input}\n\n"
+                + delm[2] + "\n"
+        )
+        PROMPT_FORMAT[name]["prompt_no_input"] = (
+                delm[0] + "\n{instruction}\n\n"
+                + delm[1] + "\n\n\n"
+                + delm[2] + "\n"
+        )
 
 TEST_INJECTED_WORDS = ['Hacked', 'Hello World', 'Serendipity', 'Xylophone']
 # TEST_INJECTED_WORD = "pwned"       # fixme rare

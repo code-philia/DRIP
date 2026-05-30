@@ -17,19 +17,19 @@ class LlamaISEConfig(LlamaConfig):
         self.apply_input_shifts = kwargs.get('apply_input_shifts', True)
         self.apply_intermediate_shifts = kwargs.get('apply_intermediate_shifts', False)
         self.num_blocks_with_shifts = kwargs.get('num_blocks_with_shifts', 1)
-        self.num_experts = kwargs.get('num_experts', 3)
+        self.num_labels = kwargs.get('num_labels', 3)
         self.d_gap = kwargs.get('d_gap', 512)
-        assert self.num_experts > 0, "num_experts must be > 0"
+        assert self.num_labels > 0, "num_labels must be > 0"
 
 class LlamaModel(transformers.LlamaModel):
     def __init__(self, config: LlamaISEConfig):
         super().__init__(config)
         self.apply_input_shifts = config.apply_input_shifts
-        self.input_shifts = nn.Embedding(config.num_experts, config.hidden_size)
+        self.input_shifts = nn.Embedding(config.num_labels, config.hidden_size)
 
         self.apply_intermediate_shifts = config.apply_intermediate_shifts
         self.num_blocks_with_shifts = config.num_blocks_with_shifts
-        self.intermediate_shifts = nn.Embedding(config.num_experts, config.hidden_size)
+        self.intermediate_shifts = nn.Embedding(config.num_labels, config.hidden_size)
 
         self.post_init()
         self.custom_initialize()

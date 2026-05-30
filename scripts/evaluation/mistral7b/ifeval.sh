@@ -29,6 +29,9 @@ case "$MODEL_PATH" in
     *instfuse*)
         EXTRA_FLAGS="--customized_model_class MistralForCausalLMDRIP"
         ;;
+    *drip*)
+        EXTRA_FLAGS="--customized_model_class MistralForCausalLMDRIP"
+        ;;
     *air*)
         EXTRA_FLAGS="--customized_model_class MistralForCausalLMAIR"
         ;;

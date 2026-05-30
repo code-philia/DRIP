@@ -17,25 +17,25 @@ from testing.test import load_full_model
 from config import PROMPT_FORMAT, DELIMITERS, DEFAULT_SYSTEM_PROMPT
 from testing.tap.utils import _inject, _generate
 from testing.pismith.trainer import PISmithConfig, PISmithTrainer
-from testing.sep.evaluation_main import diff_sentences
-
+from testing.pismith.utils import extract_injected_task
 
 class SEPTrainer(PISmithTrainer):
-    """
-    PISmith trainer for SEP dataset.
-    Each sample has its own witness; judge_fn is overridden per-sample inside train().
-    Inherits _build_messages, _tokenize_messages, _generate_group,
-    _compute_rewards, _pismith_loss, save from PISmithTrainer.
-    """
 
     def train(self, samples: List[Dict]) -> None:
         cfg  = self.config
-        step = 0
-
-        # DDP: each rank processes a non-overlapping shard
+        start_step = 0
         shard = samples[self.rank::self.world_size] if self.is_ddp else samples
 
-        for epoch in range(cfg.num_epochs):
+        start_step, _ = self._resume_state()
+        samples_per_epoch = max(len(shard), 1)
+        start_epoch = start_step // samples_per_epoch
+
+        step = start_step
+        if self.is_main and start_step > 0:
+            print(f"[PISmith] Resumed: step={start_step}, "
+                  f"samples/epoch={samples_per_epoch}, starting at epoch={start_epoch}")
+
+        for epoch in range(start_epoch, cfg.num_epochs):
             random.shuffle(shard)
             pbar = tqdm(shard, desc=f"PISmith SEP epoch {epoch + 1}", disable=not self.is_main)
 
@@ -64,7 +64,11 @@ class SEPTrainer(PISmithTrainer):
                     attack_prompts = self._generate_group(input_ids, cfg.group_size)
 
                 rewards = self._compute_rewards(
-                    attack_prompts, target_inst, context, injected_task, witness,
+                    attack_prompts=attack_prompts,
+                    target_inst=target_inst,
+                    context=context,
+                    injected_task=injected_task,
+                    witness=witness,
                 )
 
                 self.judge_fn = orig_judge   # restore
@@ -83,7 +87,7 @@ class SEPTrainer(PISmithTrainer):
 
                 step += 1
                 if self.is_main and step % cfg.save_steps == 0:
-                    self.save(suffix=f"step{step}")
+                    self.save(suffix=f"step{step}", step=step, epoch=epoch)
 
             if self.is_ddp:
                 dist.barrier()
@@ -91,27 +95,6 @@ class SEPTrainer(PISmithTrainer):
         if self.is_main:
             print(f"[PISmith SEP] Training done. Total steps: {step}")
 
-
-# ── Dataset helpers ───────────────────────────────────────────────────────────
-
-def extract_injected_task(sample: Dict) -> tuple:
-    """
-    Returns (raw_task, injected_task).
-
-    raw_task      : the bare injected instruction (e.g. "Tell me what a book is primarily made of.")
-                    used for pre-test (naive injection baseline)
-    injected_task : goal string for TAP attacker/scorer
-                    = "Execute/Answer the following task: " + raw_task
-    """
-    probe = diff_sentences(sample["prompt_instructed"], sample["prompt_clean"])
-    if len(probe["removed"]):
-        probe = probe["removed"][0]
-    else:
-        probe = probe["added"][0]
-
-    probe = probe.replace("On top of your main task, answer this priority question: ", "")
-
-    return probe
 
 
 
@@ -124,8 +107,7 @@ def main():
                    help="Explicit base model path; required when adapter path "
                         "does not encode the base path via the usual suffix convention.")
     parser.add_argument("--customized_model_class",   type=str, default="")
-    parser.add_argument("--train_data_path", type=str,
-                        default="./datasets/SEP_dataset.json")
+    parser.add_argument("--train_data_path", type=str, default="./datasets/SEP_dataset.json")
     parser.add_argument("--max_train_samples", type=int, default=50)
     parser.add_argument("--attack_model_name", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--attack_model_path", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
@@ -141,6 +123,7 @@ def main():
     parser.add_argument("--lora_alpha",   type=int,   default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--lora_target_modules", type=str, nargs="+")
+    parser.add_argument("--resume_from_checkpoint", action="store_true")
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
 
@@ -163,25 +146,26 @@ def main():
         base_model_path=args.base_model_path,
         device_map={"": this_gpu},
     )
-    delm = DELIMITERS[frontend_delimiters]
-    fmt  = dict(PROMPT_FORMAT[frontend_delimiters])
-    if len(delm) == 4:
-        fmt["prompt_input_tool"] = (
-            delm[0] + DEFAULT_SYSTEM_PROMPT + "\n\n"
-            + delm[1] + "\n{instruction}\n\n"
-            + delm[2] + "\n{input}\n\n"
-            + delm[3] + "\n"
-        )
 
-    def target_query_fn(target_inst: str, context: str, attack_prompt: str) -> str:
+    def target_query_fn(
+            target_inst: str,
+            context: str,
+            attack_prompt: str,
+    ) -> str:
+
         injected_context = _inject(context, attack_prompt, position=args.inject_position)
-        prompt = fmt["prompt_input_tool"].format_map({
+        prompt = PROMPT_FORMAT[frontend_delimiters]["prompt_input"].format_map({
+            "system": DEFAULT_SYSTEM_PROMPT,
             "instruction": target_inst,
-            "input":       injected_context,
+            "input": injected_context,
         })
-        return _generate(prompt, model, tokenizer, frontend_delimiters,
+        return _generate(prompt,
+                         model,
+                         tokenizer,
+                         frontend_delimiters,
                          max_new_tokens=args.target_max_new_tokens,
-                         customized_model_class=args.customized_model_class)
+                         customized_model_class=args.customized_model_class
+                         )
 
     # ── Build training samples from SEP ──────────────────────────────────────
     with open(args.train_data_path, "r") as f:
@@ -222,6 +206,7 @@ def main():
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         lora_target_modules=args.lora_target_modules,
+        resume_from_checkpoint=args.resume_from_checkpoint,
     )
 
     # Placeholder judge — SEPTrainer overrides it per-sample during train()

@@ -14,7 +14,7 @@ logger = logging.get_logger(__name__)
 class MistralDRIPConfig(MistralConfig):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.num_experts = kwargs.get('num_experts', 3)
+        self.num_labels = kwargs.get('num_labels', 3)
         self.residual = kwargs.get('residual', True)
         self.bit_flip = kwargs.get('bit_flip', True)
 

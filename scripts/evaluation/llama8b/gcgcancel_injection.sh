@@ -38,6 +38,9 @@ case "$MODEL_PATH" in
     *instfuse*)
         EXTRA_FLAGS="--customized_model_class LlamaForCausalLMDRIP"
         ;;
+    *drip*)
+        EXTRA_FLAGS="--customized_model_class LlamaForCausalLMDRIP"
+        ;;
 esac
 
 if [ -n "$EXTRA_FLAGS" ]; then

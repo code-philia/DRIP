@@ -24,7 +24,6 @@ class MistralISEConfig(MistralConfig):
         self.apply_input_shifts        = kwargs.get('apply_input_shifts', True)
         self.apply_intermediate_shifts = kwargs.get('apply_intermediate_shifts', False)
         self.num_blocks_with_shifts    = kwargs.get('num_blocks_with_shifts', 1)
-        self.num_experts               = kwargs.get('num_experts', 3)
         self.d_gap                     = kwargs.get('d_gap', 512)
         # Delimiter token IDs for runtime expert_label computation
         self.data_delm_ids     = kwargs.get('data_delm_ids', None)
@@ -34,7 +33,7 @@ class MistralISEConfig(MistralConfig):
         self.instruct_label    = kwargs.get('instruct_label',  0 if self.num_labels == 3 else 1)
         self.data_label        = kwargs.get('data_label',      1 if self.num_labels == 3 else 2)
         self.response_label    = kwargs.get('response_label',  self.num_labels - 1)
-        assert self.num_experts > 0, "num_experts must be > 0"
+        assert self.num_labels > 0, "num_labels must be > 0"
 
 
 def _resolve_expert_labels(
@@ -69,7 +68,7 @@ class MistralModel(transformers.MistralModel):
     def __init__(self, config: MistralISEConfig):
         super().__init__(config)
         self.apply_input_shifts        = config.apply_input_shifts
-        self.input_shifts              = nn.Embedding(config.num_experts, config.hidden_size)
+        self.input_shifts              = nn.Embedding(config.num_labels, config.hidden_size)
         self.num_blocks_with_shifts    = config.num_blocks_with_shifts
         self.shift_tap = torch.nn.Identity()
         self.post_init()

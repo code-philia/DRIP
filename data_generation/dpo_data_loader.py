@@ -1,4 +1,4 @@
-from config import PROMPT_FORMAT, DELIMITERS
+from config import PROMPT_FORMAT, DELIMITERS, DEFAULT_SYSTEM_PROMPT
 import torch
 import transformers
 from transformers import PreTrainedTokenizer
@@ -7,14 +7,22 @@ from dataclasses import dataclass, field
 from datasets import Dataset as HFDataset
 from .sft_data_loader import jload, _tokenize_fn
 
+# mm_token_type_ids convention (Qwen3.5 get_rope_index): text=0, image=1, video=2
+MM_TEXT, MM_IMAGE, MM_VIDEO = 0, 1, 2
 
-def generate_training_data_dpo(data_dicts: List[Dict], prompt_dict_name: str, tokenizer: PreTrainedTokenizer
-                               ) -> Tuple[List[str], List[str], List[str]]:
+
+class _SafeFormatDict(dict):
+    def __missing__(self, key):
+        if key == "system":
+            return DEFAULT_SYSTEM_PROMPT
+        raise KeyError(key)
+
+def generate_training_data_dpo(data_dicts, prompt_dict_name, tokenizer):
     prompt_dict = PROMPT_FORMAT[prompt_dict_name]
-
-    return [prompt_dict["prompt_input"].format_map(example) for example in data_dicts], \
-               [f"{example['chosen']}{tokenizer.eos_token}" for example in data_dicts], \
-               [f"{example['rejected']}{tokenizer.eos_token}" for example in data_dicts]
+    prompt_inputs = [prompt_dict["prompt_input"].format_map(_SafeFormatDict(ex)) for ex in data_dicts]
+    chosen_responses = [f"{ex['chosen']}{tokenizer.eos_token}" for ex in data_dicts]
+    rejected_responses = [f"{ex['rejected']}{tokenizer.eos_token}" for ex in data_dicts]
+    return prompt_inputs, chosen_responses, rejected_responses
 
 
 class PreferenceWithExpertDatasetHF:
@@ -45,10 +53,10 @@ class DPOCollatorWithExpert(object):
 
     tokenizer: transformers.PreTrainedTokenizer
     frontend_delimiters: str
-    max_length: int = 2048
-    max_prompt_length: int = 1024
+    max_length: int = 4096
+    max_prompt_length: int = 3072
     max_target_length: int = 1024
-    expert_pad_val: int = field(init=False)  # set in __post_init__ from num_labels
+    expert_pad_val: int = field(init=False)   # set in __post_init__ from num_labels
 
     def __post_init__(self):
         delm = DELIMITERS[self.frontend_delimiters]
@@ -104,25 +112,32 @@ class DPOCollatorWithExpert(object):
         c_ids, c_am, c_ex = pad(chosen_trip)
         r_ids, r_am, r_ex = pad(reject_trip)
 
-        return dict(
+        out = dict(
             chosen_input_ids=c_ids,
             chosen_attention_mask=c_am,
             chosen_expert_labels=c_ex,
             rejected_input_ids=r_ids,
             rejected_attention_mask=r_am,
             rejected_expert_labels=r_ex,
-            prompt_lens=p_lens
+            prompt_lens=p_lens,
         )
 
+        return out
 
-def make_dpo_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, frontend_delimiters
-                                ) -> Dict:
-    """Make dataset and collator for DPO training."""
-    train_dataset = PreferenceWithExpertDatasetHF(tokenizer=tokenizer,
-                                                data_path_list=data_args.data_path_list,
-                                                attack=data_args.attack)
-    data_collator = DPOCollatorWithExpert(tokenizer=tokenizer,
-                                          frontend_delimiters=frontend_delimiters)
+
+def make_dpo_data_module(tokenizer, data_args, frontend_delimiters,
+                         max_length=2048):
+    train_dataset = PreferenceWithExpertDatasetHF(
+        tokenizer=tokenizer, data_path_list=data_args.data_path_list,
+        attack=data_args.attack,
+    )
+    data_collator = DPOCollatorWithExpert(
+        tokenizer=tokenizer,
+        frontend_delimiters=frontend_delimiters,
+        max_length=max_length,
+        max_prompt_length=max_length * 3 // 4,   # 1536 if max_length=2048
+        max_target_length=max_length // 4,       # 512
+    )
     return dict(train_dataset=train_dataset.hf_dataset(),
                 eval_dataset=None,
                 data_collator=data_collator)
