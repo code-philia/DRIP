@@ -11,6 +11,7 @@ from data_generation.sft_data_loader import _tokenize_fn
 from dataclasses import dataclass
 import json
 import re
+import torch.nn.functional as F
 
 _generate_lock = threading.Lock()
 
@@ -104,6 +105,60 @@ def _generate(
         torch.cuda.empty_cache()
     return response
 
+
+def _generate_batch(
+    prompts: List[str],
+    model,
+    tokenizer,
+    frontend_delimiters: str,
+    max_new_tokens: int = 512,
+    customized_model_class: str = "",
+) -> List[str]:
+    with _generate_lock:
+        model.generation_config.pad_token_id = tokenizer.pad_token_id
+        use_expert_labels = bool(customized_model_class)
+
+        toks = _tokenize_fn(
+            prompts, tokenizer,
+            frontend_delimiters=frontend_delimiters,
+            compute_gate=use_expert_labels,
+        )
+
+        # left-pad to same length
+        input_ids_list = toks["input_ids"]  # list of 1D tensors
+        max_len = max(t.shape[0] for t in input_ids_list)
+        pad_id = tokenizer.pad_token_id
+
+        padded_ids = torch.stack([
+            F.pad(t, (max_len - t.shape[0], 0), value=pad_id)
+            for t in input_ids_list
+        ]).to(model.device)
+
+        attn_mask = (padded_ids != pad_id).long()
+
+        gen_kwargs = dict(
+            attention_mask=attn_mask,
+            max_new_tokens=max_new_tokens,
+            use_cache=True,
+            do_sample=False,
+            top_p=None,
+        )
+
+        if use_expert_labels:
+            expert_labels_list = toks["expert_labels"]
+            padded_el = torch.stack([
+                F.pad(t, (max_len - t.shape[0], 0), value=0)
+                for t in expert_labels_list
+            ]).to(model.device)
+            gen_kwargs["expert_labels"] = padded_el
+
+        out_ids = model.generate(padded_ids, **gen_kwargs)
+
+        responses = [
+            tokenizer.decode(out_ids[i, max_len:], skip_special_tokens=True)
+            for i in range(len(prompts))
+        ]
+    return responses
 
 # ────────────────────────────────────────────────────────────────────────────
 # Public API

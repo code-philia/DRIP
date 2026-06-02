@@ -17,7 +17,7 @@ from testing.test import load_full_model
 from config import PROMPT_FORMAT, DELIMITERS, DEFAULT_SYSTEM_PROMPT
 from testing.tap.utils import _inject, _generate
 from testing.pismith.trainer import PISmithConfig, PISmithTrainer
-from testing.pismith.utils import extract_injected_task
+from testing.pismith.utils import extract_injected_task, make_witness_judge, make_hybrid_judge, make_llm_judge
 
 class SEPTrainer(PISmithTrainer):
 
@@ -46,16 +46,19 @@ class SEPTrainer(PISmithTrainer):
                 witness       = sample.get("witness", "")
 
                 # Per-sample judge: witness word must appear in response
-                def _judge(response: str, w: str = witness) -> bool:
-                    if not w:
-                        return False
-                    return bool(re.search(
-                        rf"\b{re.escape(w)}\b", response, flags=re.IGNORECASE
-                    ))
+                judge_mode = getattr(cfg, "judge_mode", "witness")
+                if judge_mode == "witness":
+                    new_judge = make_witness_judge(witness)
+                elif judge_mode == "llm":
+                    new_judge = make_llm_judge(injected_task, target_inst)
+                elif judge_mode == "hybrid":
+                    new_judge = make_hybrid_judge(witness, injected_task, target_inst)
+                else:
+                    raise ValueError(f"unknown judge_mode: {judge_mode}")
 
                 # Temporarily override judge_fn for this sample
                 orig_judge    = self.judge_fn
-                self.judge_fn = _judge
+                self.judge_fn = new_judge
 
                 messages  = self._build_messages(target_inst, context, injected_task, witness)
                 input_ids = self._tokenize_messages(messages)
@@ -72,6 +75,11 @@ class SEPTrainer(PISmithTrainer):
                 )
 
                 self.judge_fn = orig_judge   # restore
+                if self.is_main and step % 10 == 0:
+                    best_idx = rewards.index(max(rewards))
+                    print(f"\n[Step {step}] mean_r={sum(rewards) / len(rewards):.3f}")
+                    print(f"  injected_task: {injected_task[:100]}")
+                    print(f"  best_injection (r={rewards[best_idx]:.1f}): {attack_prompts[best_idx][:300]}")
 
                 mean_r = sum(rewards) / len(rewards)
                 if self.is_main:
@@ -108,15 +116,16 @@ def main():
                         "does not encode the base path via the usual suffix convention.")
     parser.add_argument("--customized_model_class",   type=str, default="")
     parser.add_argument("--train_data_path", type=str, default="./datasets/SEP_dataset.json")
-    parser.add_argument("--max_train_samples", type=int, default=50)
+    parser.add_argument("--max_train_samples", type=int, default=100)
     parser.add_argument("--attack_model_name", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--attack_model_path", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--output_dir",   type=str, default="./pismith_ckpt/sep")
     parser.add_argument("--group_size",   type=int,   default=2)
-    parser.add_argument("--lr",           type=float, default=1e-6)
-    parser.add_argument("--num_epochs",   type=int,   default=1)
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--num_epochs", type=int, default=10)
     parser.add_argument("--save_steps",   type=int,   default=50)
-    parser.add_argument("--entropy_coef_max", type=float, default=0.1)
+    parser.add_argument("--entropy_coef_max", type=float, default=0.01)
+    parser.add_argument("--clip_eps", type=float, default=0.2)
     parser.add_argument("--inject_position", type=str, default="end")
     parser.add_argument("--target_max_new_tokens", type=int, default=512)
     parser.add_argument("--lora_r",       type=int,   default=16)
@@ -124,6 +133,8 @@ def main():
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--lora_target_modules", type=str, nargs="+")
     parser.add_argument("--resume_from_checkpoint", action="store_true")
+    parser.add_argument("--judge_mode", default="witness",
+                        choices=["witness", "llm", "hybrid"])
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
 
@@ -148,9 +159,9 @@ def main():
     )
 
     def target_query_fn(
-            target_inst: str,
-            context: str,
-            attack_prompt: str,
+        target_inst: str,
+        context: str,
+        attack_prompt: str,
     ) -> str:
 
         injected_context = _inject(context, attack_prompt, position=args.inject_position)
@@ -207,6 +218,7 @@ def main():
         lora_dropout=args.lora_dropout,
         lora_target_modules=args.lora_target_modules,
         resume_from_checkpoint=args.resume_from_checkpoint,
+        clip_eps=args.clip_eps,
     )
 
     # Placeholder judge — SEPTrainer overrides it per-sample during train()

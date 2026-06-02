@@ -169,6 +169,7 @@ class Qwen3ForCausalLMDRIP(transformers.Qwen3ForCausalLM):
         self.vocab_size      = config.vocab_size
         self.hidden_size     = config.hidden_size
         self.residual_weight = nn.Parameter(torch.tensor([0.0]))
+        # self.residual_weight = nn.Parameter(torch.tensor([0.8473]))
         self.response_label  = config.response_label
         self.instruct_label  = config.instruct_label
         self.final_tap       = nn.Identity()

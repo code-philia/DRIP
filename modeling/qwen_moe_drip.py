@@ -150,12 +150,12 @@ class Qwen3MoeModel(transformers.Qwen3MoeModel):
             self._router_logits_buffer = []   # reset per forward call
 
         for layer_idx, decoder_layer in enumerate(self.layers[:self.config.num_hidden_layers]):
-            if self.config.bit_flip and layer_idx == 0:
-                if expert_labels is not None:
-                    data_mask_2d = (expert_labels == self.data_label)
-                    data_mask_3d = data_mask_2d.unsqueeze(-1).expand_as(hidden_states)
-                    shifts = self.deinstruction_shift(hidden_states)
-                    hidden_states = torch.where(data_mask_3d, shifts + hidden_states, hidden_states)
+            # if self.config.bit_flip and layer_idx == 0:
+            #     if expert_labels is not None:
+            #         data_mask_2d = (expert_labels == self.data_label)
+            #         data_mask_3d = data_mask_2d.unsqueeze(-1).expand_as(hidden_states)
+            #         shifts = self.deinstruction_shift(hidden_states)
+            #         hidden_states = torch.where(data_mask_3d, shifts + hidden_states, hidden_states)
 
             hidden_states = self.shift_tap(hidden_states)
             hidden_states = decoder_layer(

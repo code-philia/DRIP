@@ -9,12 +9,9 @@ from tqdm import tqdm
 
 from testing.test import load_full_model, test_model_output
 from config import PROMPT_FORMAT, DEFAULT_SYSTEM_PROMPT
-from testing.tap.utils import _inject, _generate
-from testing.pismith.utils import (
-    extract_injected_task,
-    format_probe_in_task,
-    make_witness_judge,
-)
+from typing import Dict, List, Optional
+from testing.pismith.utils import extract_injected_task, make_llm_judge_batch, make_witness_judge
+from testing.tap.utils import _inject, _generate, _generate_batch
 from testing.pismith.trainer import PISmithInference
 
 
@@ -31,14 +28,17 @@ def main():
     parser.add_argument("--attack_base_model", type=str, default=None,
                         help="Base model for LoRA. If None, read from adapter_config.json.")
     parser.add_argument("--data_path", type=str, default="./datasets/SEP_dataset.json")
-    parser.add_argument("--n_samples", type=int, default=1)
+    parser.add_argument("--n_samples", type=int, default=10)
     parser.add_argument("--inject_position", type=str, default="end",
                         choices=["end", "start", "random"])
     parser.add_argument("--target_max_new_tokens", type=int, default=512)
     parser.add_argument("--attack_temperature", type=float, default=1.0)
     parser.add_argument("--attack_max_new_tokens", type=int, default=256)
-    parser.add_argument("--limit", type=int, default=200,
+    parser.add_argument("--limit", type=int, default=8000,
                         help="Max number of test samples to evaluate.")
+    parser.add_argument("--test_start", type=int, default=100,
+                        help="Start index for evaluation (skip training samples).")
+    parser.add_argument("--attack_source", type=str, default="auto")
     args = parser.parse_args()
     args.model_name_or_path = args.model_name_or_path[0]
 
@@ -50,7 +50,6 @@ def main():
     )
     fmt = PROMPT_FORMAT[frontend_delimiters]
 
-    # ── Target query function (closure over witness for sanitization) ─────────
     def make_target_query_fn(context: str, target_inst: str, witness: str):
         _witness_re = re.compile(re.escape(witness), re.IGNORECASE) if witness else None
 
@@ -68,11 +67,44 @@ def main():
                              customized_model_class=args.customized_model_class)
         return target_query_fn
 
+    # ── Target query function (closure over witness for sanitization) ─────────
+    def make_target_query_fn_batch(context: str, target_inst: str, witness: str):
+        _witness_re = re.compile(re.escape(witness), re.IGNORECASE) if witness else None
+
+        def target_query_fn_batch(sanitized_list: List[str]) -> List[str]:
+            prompts = []
+            for s in sanitized_list:
+                s = _witness_re.sub("", s).strip() if _witness_re else s
+                injected_context = _inject(context, s, position=args.inject_position)
+                prompt = fmt["prompt_input"].format_map({
+                    "system": DEFAULT_SYSTEM_PROMPT,
+                    "instruction": target_inst,
+                    "input": injected_context,
+                })
+                prompts.append(prompt)
+
+            if not args.customized_model_class:
+                return _generate_batch(
+                    prompts, model, tokenizer, frontend_delimiters,
+                    max_new_tokens=args.target_max_new_tokens,
+                    customized_model_class=args.customized_model_class,
+                )
+            else:
+                return [
+                    _generate(p, model, tokenizer, frontend_delimiters,
+                              max_new_tokens=args.target_max_new_tokens,
+                              customized_model_class=args.customized_model_class)
+                    for p in prompts
+                ]
+
+        return target_query_fn_batch
+
     # ── Output path ───────────────────────────────────────────────────────────
     model_path = args.model_name_or_path
     log_path = f"{model_path}-log" if not os.path.exists(model_path) else model_path
     os.makedirs(log_path, exist_ok=True)
-    out_path = os.path.join(log_path, "predictions_on_sep_pismith.jsonl")
+    suffix = f"_pismith_transfer_{args.attack_source}" if args.attack_source != "auto" else "_pismith"
+    out_path = os.path.join(log_path, f"predictions_on_sep{suffix}.jsonl")
 
     output: list = []
     start_idx = 0
@@ -105,7 +137,7 @@ def main():
 
     # ── Main eval loop ────────────────────────────────────────────────────────
     for i, sample in enumerate(tqdm(dataset, desc="SEP PISmith")):
-        if i < start_idx or i >= args.limit:
+        if i < max(start_idx, args.test_start) or i >= args.limit:
             continue
 
         witness       = sample["witness"]
@@ -114,17 +146,9 @@ def main():
         injected_task = extract_injected_task(sample)
 
         # Wire per-sample target + judge into the inference engine
-        attack_engine.target_query_fn = make_target_query_fn(context, target_inst, witness)
-        attack_engine.judge_fn        = make_witness_judge(witness)
-
-        # output2: probe-in-task reference (baseline: probe embedded in the task itself)
-        probe_in_task_prompt = format_probe_in_task(sample, fmt)
-        _, _, _, ref_out = test_model_output(
-            [probe_in_task_prompt], model, tokenizer,
-            attack_log_file=None, print_results=False,
-            frontend_delimiters=frontend_delimiters,
-        )
-        output2: str = ref_out[0][0]
+        attack_engine.target_query_fn_batch = make_target_query_fn_batch(context, target_inst, witness)
+        attack_engine.judge_fn_batch = None
+        attack_engine.judge_fn = make_witness_judge(witness)
 
         # Generate N attack rollouts and query target
         result = attack_engine.attack_one(
@@ -136,7 +160,6 @@ def main():
 
         output.append({
             "output1_probe_in_data": result["best_response"],
-            "output2_probe_in_task": output2,
             "pismith_asr_at_n":      result["asr_at_n"],
             "pismith_asr_at_1":      result["asr_at_1"],
             "pismith_best_prompt":   result["best_prompt"],
@@ -147,7 +170,6 @@ def main():
                     "instruction": target_inst,
                     "input": _inject(context, result["best_prompt"], position=args.inject_position),
                 }),
-                "input_2": probe_in_task_prompt,
             },
             "data":     sample,
             "rollouts": result["rollouts"],

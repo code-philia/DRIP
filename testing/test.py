@@ -60,6 +60,7 @@ from modeling import (
     set_delimiter_ids_in_config,
     LlamaAIRConfig,
     MistralAIRConfig,
+    Qwen3DRIPConfig, Qwen3ForCausalLMDRIP
 )
 
 try:
@@ -86,7 +87,9 @@ REGISTRY: Dict[str, Tuple[type, type]] = {
     "MistralForCausalLMISE":    (MistralISEConfig,  MistralForCausalLMISE),
     "MistralForCausalLMAIR": (MistralAIRConfig, MistralForCausalLMAIR),
     "MistralForCausalLMPFT": (MistralISEConfig,  MistralForCausalLMPFT),
-    "QwenForCausalLMDRIP":     (Qwen3MoeDRIPConfig, Qwen3MoeForCausalLMDRIP),
+    "Qwen3MoeForCausalLMDRIP":     (Qwen3MoeDRIPConfig, Qwen3MoeForCausalLMDRIP),
+    "Qwen3ForCausalLMDRIP": (Qwen3DRIPConfig, Qwen3ForCausalLMDRIP),
+
 }
 
 

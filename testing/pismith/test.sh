@@ -60,7 +60,14 @@ else
 fi
 
 # ── Attack adapter path: combines dataset + target ──────────────────────────
-attack_path="./pismith_ckpt/sep_${target_tag}/attack_lm_final"
+# ── Attack adapter path ──────────────────────────────────────────────────────
+ATTACK_SOURCE="${4:-auto}"  # 4th arg: "llama" to force llama adapter, default auto
+
+if [[ "$ATTACK_SOURCE" == "llama" ]]; then
+    attack_path="./pismith_ckpt/sep_llama/attack_lm_final"
+else
+    attack_path="./pismith_ckpt/sep_${target_tag}/attack_lm_final"
+fi
 
 # ── Report ──────────────────────────────────────────────────────────────────
 echo "──────────────────────────────────────────────────────────────"
@@ -82,7 +89,8 @@ fi
 # ── Build & run ─────────────────────────────────────────────────────────────
 CMD=(python -m "$test_module"
      -m "$MODEL_PATH"
-     --attack_model_path "$attack_path")
+     --attack_model_path "$attack_path"
+     --attack_source "$ATTACK_SOURCE")
 
 if [[ -n "$customized_class" ]]; then
     CMD+=(--customized_model_class "$customized_class")

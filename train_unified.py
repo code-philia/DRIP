@@ -65,11 +65,13 @@ MISTRAL_REGISTRY = {
 }
 
 QWEN3_REGISTRY = {"fuse": (Qwen3DRIPConfig, Qwen3ForCausalLMDRIP)}
+QWEN3MoE_REGISTRY = {"fuse": (Qwen3MoeDRIPConfig, Qwen3MoeForCausalLMDRIP)}
 
 FAMILY_REGISTRY = {
     "llama":      LLAMA_REGISTRY,
     "mistral":    MISTRAL_REGISTRY,
     "qwen3":       QWEN3_REGISTRY,
+    "qwen3moe": QWEN3MoE_REGISTRY,
 }
 
 
@@ -87,7 +89,7 @@ def pick_model(family: str, arch: str):
 # =============================================================================
 
 _FUSE_LIKE = {"fuse", "nofuse", "concatfuse", "embeddingshift"}
-_ATTN_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
+_ATTN_MODULES = ["q_proj", "v_proj", "k_proj", "o_proj"]
 
 
 def build_lora_config(
@@ -96,14 +98,14 @@ def build_lora_config(
         model_family: str,
 ) -> LoraConfig:
 
-    is_moe = model_family == "qwen"
+    is_moe = model_family == "qwen3moe"
 
     if arch == "air":
         modules_to_save = ["intermediate_shifts"]
         if objective == "dpo":
             modules_to_save += ["lm_head", "embed_tokens"]
         return LoraConfig(
-            r=64,
+            r=32,
             lora_alpha=8,
             lora_dropout=0.1,
             bias="none",
@@ -116,9 +118,9 @@ def build_lora_config(
         modules_to_save = ["input_shifts", "embed_tokens"]
         target_modules = _ATTN_MODULES if is_moe else "all-linear"
         return LoraConfig(
-            r=16,
+            r=32,
             lora_alpha=8,
-            lora_dropout=0.05,
+            lora_dropout=0.1,
             bias="none",
             task_type="CAUSAL_LM",
             target_modules=target_modules,
@@ -139,7 +141,7 @@ def build_lora_config(
         return LoraConfig(
             r=16,
             lora_alpha=8,
-            lora_dropout=0.05,
+            lora_dropout=0.1,
             bias="none",
             task_type="CAUSAL_LM",
             target_modules=target_modules,
@@ -151,9 +153,9 @@ def build_lora_config(
     target_modules = _ATTN_MODULES if is_moe else "all-linear"
 
     return LoraConfig(
-        r=16,
+        r=32,
         lora_alpha=8,
-        lora_dropout=0.05,
+        lora_dropout=0.1,
         bias="none",
         task_type="CAUSAL_LM",
         target_modules=target_modules,
@@ -202,7 +204,7 @@ def parse_args(argv):
                    choices=["dpo", "sft", "secalign_dpo", "struq_sft"],
                    required=True)
     p.add_argument("--model-family",
-                   choices=["llama", "mistral", "qwen", "qwen3"],
+                   choices=["llama", "mistral", "qwen", "qwen3", "qwen3moe"],
                    default="base")
     p.add_argument("--arch", required=True,
                    choices=["base", "fuse", "nofuse", "concatfuse",
@@ -400,7 +402,7 @@ def build_ref_model(Model, model_args, config, bnb_config=None):
 
 def build_trainer(known, model, ref_model, tokenizer, training_args, data_module):
 
-    is_moe = known.model_family == "qwen"
+    is_moe = known.model_family == "qwen3moe"
     if is_moe:
         cls = DPOTrainerMOE
         return cls(model=model,

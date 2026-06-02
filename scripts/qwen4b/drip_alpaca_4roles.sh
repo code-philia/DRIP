@@ -11,12 +11,11 @@ export TOKENIZERS_PARALLELISM=false
 export WANDB_MODE=disabled
 
 # === NCCL hang protection ===
-export TORCH_NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_TIMEOUT_MS=1800000
 export TORCH_NCCL_TRACE_BUFFER_SIZE=20480
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
-export CUDA_VISIBLE_DEVICES=3,4,5,6
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_VISIBLE_DEVICES=2,3,4,5,6,7
 
 SCRIPT_PATH="train_unified.py"
 BASELINE="drip"
@@ -37,7 +36,7 @@ OBJECTIVE="dpo"
 MODEL_FAMILY="qwen3"
 ARCH="fuse"
 
-python -m torch.distributed.run --nproc_per_node=4 --master_port=29951 "$SCRIPT_PATH" \
+python -m torch.distributed.run --nproc_per_node=6 --master_port=29951 "$SCRIPT_PATH" \
   --objective "${OBJECTIVE}" \
   --model-family "${MODEL_FAMILY}" \
   --arch "${ARCH}" \
@@ -60,8 +59,6 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port=29951 "$SCRIPT_
   --attack "${DELIMITER}_None" \
   --model_max_length 2048 \
   --dataloader_num_workers 1 \
-  --fsdp "full_shard auto_wrap" \
-  --fsdp_config "$FSDP_CONFIG" \
   --resume_from_checkpoint True \
   --seed "$SEED" \
   --data_seed "$SEED"

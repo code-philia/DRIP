@@ -1,6 +1,6 @@
 import transformers
 from transformers import Trainer
-from transformers.trainer import PreTrainedModel, is_sagemaker_mp_enabled
+from transformers.trainer import PreTrainedModel, is_sagemaker_mp_enabled, Adafactor, is_bitsandbytes_available
 from typing import Optional, Tuple, Any, List
 from torch import nn
 from trl import DPOTrainer
@@ -10,7 +10,6 @@ import torch
 import torch.nn.functional as F
 from contextlib import contextmanager, nullcontext
 from torch import autocast
-from collections import defaultdict
 
 @dataclass
 class ModelArguments:
@@ -83,26 +82,31 @@ class DPOTrainerOurs(DPOTrainer):
         return dataset
 
     @staticmethod
-    def _seq_logps(self, model, ids, attention_mask, expert_labels, prompt_length,
-                   return_logits=False, mm_kwargs=None):
-        from trl.trainer.utils import selective_log_softmax
-
+    def _seq_logps(model, ids, attention_mask, expert_labels, prompt_length, return_logits=False):
         out = model(
-            input_ids=ids, attention_mask=attention_mask,
-            expert_labels=expert_labels, use_cache=False, **(mm_kwargs or {}),
+            input_ids=ids,
+            attention_mask=attention_mask,
+            expert_labels=expert_labels,
+            use_cache=False
         )
-        shift_logits = out.logits[:, :-1, :]
-        target = ids[:, 1:]
-        tok = selective_log_softmax(shift_logits, target)
+        lp = torch.log_softmax(out.logits, dim=-1) # logprob
+        lp  = lp[:, :-1, :]
+        target = ids[:, 1:] # ground-truth IDs (next token)
+        tok = torch.gather(lp, 2, target.unsqueeze(-1)).squeeze(-1) # gather the logprobs at ground-truth IDs
         B, Tm1 = tok.size()
         ar = torch.arange(Tm1, device=tok.device).unsqueeze(0).expand(B, -1)
+
         start = (prompt_length - 1).clamp_min(0).unsqueeze(1)
-        mask = (ar >= start).to(tok.dtype) * attention_mask[:, 1:].to(tok.dtype)
-        logp_sum = (tok * mask).sum(-1)
+        resp_mask = (ar >= start).to(tok.dtype)
+        mask = resp_mask * attention_mask[:, 1:].to(tok.dtype) # only compute loss at response part
+        tok = tok * mask
+
+        logp_sum = tok.sum(-1)  # shape [B]
+
         if return_logits:
-            with torch.no_grad():
-                mean_logit = (shift_logits.max(-1).values * mask).sum(-1) / mask.sum(-1).clamp(min=1)
-            return logp_sum, mean_logit
+            # mean over the response positions (before log-softmax)
+            chosen_logits = (out.logits[:, :-1, :].max(-1).values * mask).sum(-1) / mask.sum(-1).clamp(min=1)
+            return logp_sum, chosen_logits
         return logp_sum
 
     def _safe_gather(self, tensor):
@@ -352,7 +356,6 @@ class DPOTrainerMOE(DPOTrainerOurs):
         if return_outputs:
             return loss, metrics
         return loss
-
 
 
 class DPOTrainerAIR(DPOTrainerOurs):
