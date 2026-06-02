@@ -1,7 +1,6 @@
 #!/bin/bash
 
 export HF_ENDPOINT=https://hf-mirror.com
-export HF_HOME=/mnt/nvme0n1/ruofan/hf_hub/
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export OMP_NUM_THREADS=4
@@ -20,7 +19,7 @@ export CUDA_VISIBLE_DEVICES=2,3,4,5,6,7
 SCRIPT_PATH="train_unified.py"
 BASELINE="drip"
 BASE_MODEL_NAME="Qwen/Qwen3-4B-Instruct-2507"
-BASE_MODEL="/mnt/nvme0n1/ruofan/hf_hub/Qwen3-4B-Instruct-2507"
+BASE_MODEL="Qwen/Qwen3-4B-Instruct-2507"
 DATA_PATH="datasets/alpaca_injecagent_dpo_combined.json"
 FILENAME=$(basename "$DATA_PATH")
 PREFIX=${FILENAME%%_*}
