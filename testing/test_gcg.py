@@ -16,7 +16,6 @@ import os
 import argparse
 from copy import deepcopy
 from tqdm import tqdm
-from typing import Optional
 import logging
 logging.basicConfig(level=logging.INFO)
 from gcg.gcg import GCGAttack
@@ -34,7 +33,6 @@ from gcg.legacy_modeling import (LlamaDRIPConfig, LlamaForCausalLMDRIP, LlamaISE
                                  MistralISEConfig, MistralForCausalLMISE, MistralDRIPConfig, MistralForCausalLMDRIP)
 import transformers
 from peft import PeftModel
-from typing import Dict, Tuple
 logger = logging.getLogger(__name__)
 
 REGISTRY: Dict[str, Tuple[type, type]] = {

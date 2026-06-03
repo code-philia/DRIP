@@ -25,7 +25,6 @@ from testing.agentdojo.utils import *
 
 logger = logging.getLogger(__name__)
 
-from agentdojo.agent_pipeline.tool_execution import ToolsExecutor
 from config import DELIMITERS, PROMPT_FORMAT
 
 _orig_te_query = ToolsExecutor.query
@@ -154,7 +153,6 @@ class FuseLLM(BasePipelineElement):
         Handles both dict-shaped tool calls (from JSON logs) and AgentDojo
         Pydantic FunctionCall objects (live runtime).
         """
-        import json
 
         tool_calls = msg.get("tool_calls") if hasattr(msg, "get") else getattr(msg, "tool_calls", None)
         if not tool_calls:
