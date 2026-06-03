@@ -2,7 +2,7 @@
 import transformers
 import torch
 from transformers import MistralConfig
-from .llama_drip import _get_last_indices, CausalLMFuseOutputWithPast
+from .llama_drip import _get_last_indices, _response_fusion_end_indices, CausalLMFuseOutputWithPast
 from transformers.utils import logging
 from typing import Union, Optional, Tuple, List, Dict, Any
 from torch import nn
@@ -17,6 +17,7 @@ class MistralDRIPConfig(MistralConfig):
         self.num_labels = kwargs.get('num_labels', 3)
         self.residual = kwargs.get('residual', True)
         self.bit_flip = kwargs.get('bit_flip', True)
+        self.response_delm_ids = kwargs.get('response_delm_ids', None)
 
 
 class MistralModel(transformers.MistralModel):
@@ -241,7 +242,9 @@ class MistralForCausalLMDRIP(transformers.MistralForCausalLM):
                     last_inst = hidden_states[batch_idx, last_inst_indices]  # (B, H)
                     past_inst_hidden_states = last_inst.clone().detach().cpu()
 
-                end_indices = _get_last_indices(self.response_label, expert_labels) # (B,)
+                end_indices = _response_fusion_end_indices(
+                    self.response_label, expert_labels, getattr(self.config, "response_delm_ids", None)
+                )  # (B,)
                 end_state   = hidden_states[batch_idx, end_indices]  # (B, H)
 
                 # Add last instruction token's semantic as a residual connection to the 1st response token
