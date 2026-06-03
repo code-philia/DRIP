@@ -165,13 +165,15 @@ Pick the script that matches your base model:
 
 ### SEP score
 
-Run [`./scripts/evaluation/llama8b/sep.sh`](./scripts/evaluation/llama8b/sep.sh).
+1. Run [`./scripts/evaluation/llama8b/sep.sh`](./scripts/evaluation/llama8b/sep.sh).
+2. Run the SEP judge [`./testing/sep/evaluation_main_corrected_submit.py`](./testing/sep/evaluation_main_corrected_submit.py), then [`./testing/sep/evaluation_main_corrected_collect.py`](./testing/sep/evaluation_main_corrected_collect.py) to print the SEP metric.
 
 ### ASR
 
 **Alpaca heuristic-based attacks**
 
-Run [`./scripts/evaluation/llama8b/alpaca_injection.sh`](./scripts/evaluation/llama8b/alpaca_injection.sh) to evaluate ASR under the Naive, Ignore, Completion, Escape, and HackaPrompt attacks.
+1. Run [`./scripts/evaluation/llama8b/alpaca_injection.sh`](./scripts/evaluation/llama8b/alpaca_injection.sh).
+2. Run [`./testing/evaluation_main.py`](./testing/evaluation_main.py) to print ASR under the Naive, Ignore, Completion, Escape, and HackaPrompt attacks.
 
 **GCG-based adaptive attacks**
 
@@ -198,7 +200,8 @@ See [`gcg/README.md`](./gcg/README.md). GCG requires a separate legacy environme
 
 **IFEval**
 
-Run [`./scripts/evaluation/llama8b/ifeval.sh`](./scripts/evaluation/llama8b/ifeval.sh).
+1. Run [`./scripts/evaluation/llama8b/ifeval.sh`](./scripts/evaluation/llama8b/ifeval.sh).
+2. Run [`./testing/ifeval/evaluation_main.py`](./testing/ifeval/evaluation_main.py) and look for ASR strict.
 
 **MT-Bench**
 
@@ -208,4 +211,5 @@ Run [`./scripts/evaluation/llama8b/ifeval.sh`](./scripts/evaluation/llama8b/ifev
 
 **MMLU**
 
-Run [`./scripts/evaluation/llama8b/mmlu_utility.sh`](./scripts/evaluation/llama8b/mmlu_utility.sh).
+1. Run [`./scripts/evaluation/llama8b/mmlu_utility.sh`](./scripts/evaluation/llama8b/mmlu_utility.sh).
+2. Run [`./testing/mmlu/evaluation_main.py`](./testing/mmlu/evaluation_main.py).
