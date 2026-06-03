@@ -176,7 +176,7 @@ Pick the script that matches your base model:
 **Alpaca heuristic-based attacks**
 
 1. Run [`./scripts/evaluation/llama8b/alpaca_injection.sh`](./scripts/evaluation/llama8b/alpaca_injection.sh).
-2. Run [`./testing/evaluation_main.py`](./testing/evaluation_main.py) to print ASR under the Naive, Ignore, Completion, Escape, and HackaPrompt attacks.
+2. Run [`./testing/evaluation_main.py`](./testing/evaluation_main.py) `-m [model_path]` to print ASR under the Naive, Ignore, Completion, Escape, and HackaPrompt attacks.
 
 **GCG-based adaptive attacks**
 
