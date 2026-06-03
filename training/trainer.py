@@ -365,7 +365,9 @@ class DPOTrainerMOE(DPOTrainerOurs):
 
 
 class DPOTrainerAIR(DPOTrainerOurs):
-    def create_optimizer(self, special_params_list = ["intermediate_shifts"]):
+    def create_optimizer(self, special_params_list=None):
+        if special_params_list is None:
+            special_params_list = ["intermediate_shifts"]
         opt_model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
         if self.optimizer is None:
             decay_parameters = self.get_decay_parameter_names(opt_model)
