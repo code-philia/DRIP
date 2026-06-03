@@ -30,6 +30,9 @@ DRIP introduces two architectural modifications:
   - [SEP score](#sep-score)
   - [ASR](#asr)
   - [Utility](#utility)
+- [Limitations](#limitations)
+- [Acknowledgments](#acknowledgments)
+- [Citation](#citation)
 
 ---
 
@@ -213,3 +216,26 @@ See [`gcg/README.md`](./gcg/README.md). GCG requires a separate legacy environme
 
 1. Run [`./scripts/evaluation/llama8b/mmlu_utility.sh`](./scripts/evaluation/llama8b/mmlu_utility.sh).
 2. Run [`./testing/mmlu/evaluation_main.py`](./testing/mmlu/evaluation_main.py).
+
+---
+
+## Limitations
+
+DRIP is developed and evaluated under a deliberately scoped threat model. The following limitations matter when applying it elsewhere:
+
+- **Text-to-text attacks.** Both the primary task and the injected task are text instruction-following — the injected content is natural-language instructions embedded in a text data section. We do not specifically optimize for tool-calling agents, and in tool-calling scenarios the utility is expected to drop (the [AgentDojo](./testing/agentdojo/README.md) setting illustrates this regime).
+- **Dense architectures.** The representation editing is designed and validated on dense transformer architectures. We have not fully tested it on Mixture-of-Experts (MoE) models, where inserting new layers poses additional challenges. For MoE backbones we recommend our data-curation recipe together with the residual re-instruction fusion, while the de-instruction shift layer may be unnecessary (and harder to inject).
+- **Single modality.** Extending DRIP to multi-modal agents — GUI agents, browser use, OS use — requires new adaptation that is outside the scope of this work.
+
+## Acknowledgments
+
+Parts of this codebase are adapted from the following Meta AI (FAIR) projects:
+
+- [facebookresearch/Meta_SecAlign](https://github.com/facebookresearch/Meta_SecAlign)
+- [facebookresearch/SecAlign](https://github.com/facebookresearch/SecAlign)
+
+We thank the authors for releasing their code.
+
+## Citation
+
+> A BibTeX entry will be added here once the paper is released. It is currently under review.
