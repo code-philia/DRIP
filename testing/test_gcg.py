@@ -16,7 +16,6 @@ import os
 import argparse
 from copy import deepcopy
 from tqdm import tqdm
-from typing import Optional
 import logging
 logging.basicConfig(level=logging.INFO)
 from gcg.gcg import GCGAttack
@@ -31,10 +30,10 @@ import gc
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 from gcg.legacy_modeling import (LlamaDRIPConfig, LlamaForCausalLMDRIP, LlamaISEConfig, LlamaForCausalLMISE,
                                  LlamaForCausalLMPFT, MistralForCausalLMPFT,
-                                 MistralISEConfig, MistralForCausalLMISE, MistralDRIPConfig, MistralForCausalLMDRIP)
+                                 MistralISEConfig, MistralForCausalLMISE, MistralDRIPConfig, MistralForCausalLMDRIP,
+                                 LlamaForCausalLMNoFuse, LlamaForCausalLMConcatFuse, LlamaForCausalLMEmbeddingShift)
 import transformers
 from peft import PeftModel
-from typing import Dict, Tuple
 logger = logging.getLogger(__name__)
 
 REGISTRY: Dict[str, Tuple[type, type]] = {
@@ -44,6 +43,9 @@ REGISTRY: Dict[str, Tuple[type, type]] = {
     "MistralForCausalLMDRIP":   (MistralDRIPConfig, MistralForCausalLMDRIP),
     "MistralForCausalLMISE":    (MistralISEConfig,  MistralForCausalLMISE),
     "MistralForCausalLMPFT": (MistralISEConfig,  MistralForCausalLMPFT),
+    "LlamaForCausalLMNoFuse":        (LlamaDRIPConfig, LlamaForCausalLMNoFuse),
+    "LlamaForCausalLMConcatFuse":    (LlamaDRIPConfig, LlamaForCausalLMConcatFuse),
+    "LlamaForCausalLMEmbeddingShift": (LlamaDRIPConfig, LlamaForCausalLMEmbeddingShift),
 }
 
 
@@ -53,6 +55,7 @@ def load_model_and_tokenizer(
     customized_model_class: Optional[str],
     tokenizer_path: Optional[str] = None,
     device_map: Optional[int | Dict[str, int] | str] = None,
+    delims: Optional[list] = None,
     **_,
 ):
     device_map = "auto" if device_map is None else ({"": device_map} if isinstance(device_map, int) else device_map)
@@ -64,6 +67,11 @@ def load_model_and_tokenizer(
         if customized_model_class:
             Cfg, Cls = REGISTRY[customized_model_class]
             cfg   = Cfg.from_pretrained(trained_model_path)
+            # Ensure the response-delimiter ids are present so DRIP fuses at the
+            # response-delimiter position (matches the evaluated model). Prefer
+            # the checkpoint's own value; otherwise derive from the delimiters.
+            if getattr(cfg, "response_delm_ids", None) is None and delims:
+                cfg.response_delm_ids = tok.encode(delims[-1], add_special_tokens=False)
             model = Cls.from_pretrained(trained_model_path, config=cfg, torch_dtype=torch.float16, device_map=device_map)
         elif ("secalign" in trained_model_path) or ("struq" in trained_model_path):
             model = transformers.AutoModelForCausalLM.from_pretrained(

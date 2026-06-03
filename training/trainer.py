@@ -1,3 +1,4 @@
+import logging
 import transformers
 from transformers import Trainer
 from transformers.trainer import PreTrainedModel, is_sagemaker_mp_enabled, Adafactor, is_bitsandbytes_available
@@ -10,6 +11,9 @@ import torch
 import torch.nn.functional as F
 from contextlib import contextmanager, nullcontext
 from torch import autocast
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ModelArguments:

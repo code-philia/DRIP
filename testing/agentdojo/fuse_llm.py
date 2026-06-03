@@ -25,7 +25,6 @@ from testing.agentdojo.utils import *
 
 logger = logging.getLogger(__name__)
 
-from agentdojo.agent_pipeline.tool_execution import ToolsExecutor
 from config import DELIMITERS, PROMPT_FORMAT
 
 _orig_te_query = ToolsExecutor.query
@@ -154,7 +153,6 @@ class FuseLLM(BasePipelineElement):
         Handles both dict-shaped tool calls (from JSON logs) and AgentDojo
         Pydantic FunctionCall objects (live runtime).
         """
-        import json
 
         tool_calls = msg.get("tool_calls") if hasattr(msg, "get") else getattr(msg, "tool_calls", None)
         if not tool_calls:
@@ -286,15 +284,8 @@ class FuseLLM(BasePipelineElement):
         return query, runtime, env, [*messages, output_msg], extra_args
 
 
-def set_delimiter_ids_in_config(cfg, tokenizer, inst_delm, data_delm,
-                                response_delm, num_labels):
-    inst_ids = tokenizer.encode(inst_delm, add_special_tokens=False)
-    data_ids = tokenizer.encode(data_delm, add_special_tokens=False)
-    resp_ids = tokenizer.encode(response_delm, add_special_tokens=False)
-    cfg.inst_delm_ids = inst_ids
-    cfg.data_delm_ids = data_ids
-    cfg.response_delm_ids = resp_ids
-    cfg.num_labels = num_labels
+# Use the canonical implementation (also sets instruct/data/response label ids).
+from modeling.llama_drip import set_delimiter_ids_in_config
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

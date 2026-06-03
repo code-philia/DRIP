@@ -23,12 +23,38 @@ def _get_last_indices(label_index: int, expert_labels: torch.LongTensor) -> torc
     return last_indices  # may contain -1
 
 
+def _get_last_segment_start(label_index: int, expert_labels: torch.LongTensor) -> torch.LongTensor:
+    """Start index of the LAST contiguous run of `label_index` (or -1 if absent)."""
+    B, L = expert_labels.shape
+    device = expert_labels.device
+    seq = torch.arange(L, device=device).unsqueeze(0)
+    mask = (expert_labels == label_index)
+    prev_mask = torch.zeros_like(mask)
+    prev_mask[:, 1:] = mask[:, :-1]
+    run_start = mask & ~prev_mask
+    return torch.where(run_start, seq, torch.full_like(seq, -1)).max(dim=1)[0]
+
+
+def _response_fusion_end_indices(response_label, expert_labels, response_delm_ids):
+    """Index of the LAST token of the (last) response delimiter, matching the
+    evaluated DRIP model (modeling/llama_drip.py). Falls back to the last
+    response-labeled token when `response_delm_ids` is unavailable."""
+    if response_delm_ids:
+        start = _get_last_segment_start(response_label, expert_labels)
+        return (start + (len(response_delm_ids) - 1)).clamp(max=expert_labels.shape[1] - 1)
+    return _get_last_indices(response_label, expert_labels)
+
+
 class LlamaDRIPConfig(LlamaConfig):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.num_labels = kwargs.get('num_labels', 3)
         self.residual = kwargs.get('residual', True)
         self.bit_flip = kwargs.get('bit_flip', True)
+        # Response-delimiter token ids: used to fuse at the response-delimiter
+        # position (matches modeling/llama_drip.py). Populated from the trained
+        # checkpoint's config.json, or set by the loader.
+        self.response_delm_ids = kwargs.get('response_delm_ids', None)
 
 @dataclass
 class CausalLMFuseOutputWithPast(CausalLMOutputWithPast):
@@ -412,7 +438,9 @@ class LlamaForCausalLMDRIP(transformers.LlamaForCausalLM):
                     last_inst = hidden_states[batch_idx, last_inst_indices]  # (B, H)
                     past_inst_hidden_states = last_inst.clone().detach().cpu()
 
-                end_indices = _get_last_indices(self.response_label, expert_labels) # (B,)
+                end_indices = _response_fusion_end_indices(
+                    self.response_label, expert_labels, getattr(self.config, "response_delm_ids", None)
+                )  # (B,)
                 end_state   = hidden_states[batch_idx, end_indices]  # (B, H)
 
                 # Add last instruction token's semantic as a residual connection to the 1st response token
@@ -656,7 +684,9 @@ class LlamaForCausalLMConcatFuse(LlamaForCausalLMDRIP):
                     last_inst = hidden_states[batch_idx, last_inst_indices]  # (B, H)
                     past_inst_hidden_states = last_inst.clone().detach().cpu()
 
-                start_resp_indices = _get_last_indices(self.response_label, expert_labels)
+                start_resp_indices = _response_fusion_end_indices(
+                    self.response_label, expert_labels, getattr(self.config, "response_delm_ids", None)
+                )
                 start_resp = hidden_states[batch_idx, start_resp_indices]
 
                 # fixme: Concat last instruction token's semantic to the 1st response token
