@@ -47,6 +47,28 @@ internally via `expert_labels`, so DRIP knows which tokens came from the untrust
 role. In `--mode official`, the role used for tool outputs is controlled by
 `--tool-delimiter` (see the flag table below).
 
+## Training data (4-role / tool-calling)
+
+The 4-role models evaluated here are trained on a tool-calling DPO set built by
+[`data_generation/data_curation_drip_toolcall.py`](../../data_generation/data_curation_drip_toolcall.py):
+
+- For each **InjecAgent** case (direct-harm `dh` + data-stealing `ds`), it builds
+  a symmetric `(chosen, rejected)` pair that share the same reasoning prefix so
+  both stay in-distribution:
+  - **chosen** — recognizes the injected text in the **tool observation** as
+    untrusted data and finishes the user's task (no attacker tool call);
+  - **rejected** — follows the injection and calls the attacker tool, with valid
+    arguments generated (and cached) by an LLM from the tool schema.
+- These are combined with the **Alpaca** DPO set and shuffled into
+  `datasets/alpaca_injecagent_dpo_combined.json` — **20,162 pairs** total.
+- **Alpaca is included to match Meta SecAlign's training mix**, so the comparison
+  against SecAlign is fair (same benign data source).
+
+```bash
+# needs an OpenAI key for the attacker-argument generation
+python -m data_generation.data_curation_drip_toolcall
+```
+
 ## Install
 
 ```bash
