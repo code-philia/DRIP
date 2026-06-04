@@ -29,6 +29,48 @@ flowchart TD
     ED -- "no ✓ ignored" --> SEP
 ```
 
+## Dataset
+
+DRIP uses the SEP benchmark for **both training and evaluation**, on two
+separate files:
+
+- **Training** — `datasets/sep/train_dataset.json`. The DRIP DPO pairs are
+  derived from this split ([`data_generation/SEP_to_DPO.py`](../../data_generation/SEP_to_DPO.py)
+  → [`data_curation_drip.py`](../../data_generation/data_curation_drip.py)). SEP
+  is a natural fit: every example pairs a top-level **instruction** with a
+  **data** section that may contain an instruction-like probe — exactly the
+  instruction-vs-data signal DRIP learns to separate (chosen = do the task and
+  treat the probe as inert; rejected = execute the probe).
+- **Evaluation** — `datasets/SEP_dataset.json`, scored with the separation
+  metric above.
+
+Both files come from the Zenodo archive (main README → *Download the data*).
+They use different field schemas but the same kind of content, so **disjointness
+is not guaranteed by construction** — verify there is no train/eval leakage:
+
+```bash
+python data_generation/check_sep_leakage.py \
+  --train datasets/sep/train_dataset.json --eval datasets/SEP_dataset.json
+```
+
+**Sizes** — the data is downloaded separately, so count your copy:
+
+```bash
+python -c "import json;print('train', len(json.load(open('datasets/sep/train_dataset.json'))))"
+python -c "import json;print('eval ', len(json.load(open('datasets/SEP_dataset.json'))))"
+```
+
+**Record fields.** Train: `system_prompt` (instruction), `data_prompt_clean` /
+`data_prompt_instructed` (data without / with the probe), `info.probe` (the
+injected instruction). Eval: `system_prompt_clean` / `system_prompt_instructed`,
+`prompt_clean` / `prompt_instructed`, and the probe's **`witness`** string — the
+metric checks whether that witness appears in the output.
+
+> The PISmith attacker additionally splits the eval file by index
+> (`SEP_dataset.json[:100]` to train the attacker, `[100:]` to test, via
+> `--test_start`); that split is internal to the PISmith baseline and separate
+> from DRIP's own train/eval files.
+
 ## Run
 
 1. Generate predictions:
