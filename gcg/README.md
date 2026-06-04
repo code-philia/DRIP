@@ -49,3 +49,30 @@ auto-selects the matching model class (for example, a path containing `drip` run
 `--customized_model_class LlamaForCausalLMDRIP --pass_expert_labels`), then launches
 `testing.test_gcg`. The command it is about to run is echoed before it executes, so you can
 confirm the detected flags are correct.
+
+## 4. Adaptive attack variants (`--attack`)
+
+All variants run through the same `testing.test_gcg`; they only add an auxiliary loss term
+to the GCG objective via `--attack`. The plain `gcg_injection.sh` uses `--attack gcg`; the
+other launchers target a **specific DRIP component** so the attacker can try to defeat the
+defense it was warned about (the strongest adaptive setting):
+
+| Script | `--attack` | Extra loss added to GCG | What it targets |
+|---|---|---|---|
+| `gcg_injection.sh` | `gcg` | — | Standard GCG (suffix that maximizes the injected response). |
+| `attngcg_injection.sh` | `attngcg` | maximize the output's attention to the adversarial suffix ([AttnGCG](https://arxiv.org/abs/2410.09040)) | the model's attention. |
+| `gcgbypass_injection.sh` | `bypass` (`--bypass_loss_lambda`) | minimize the suffix's **de-instruction-shift** projection (`‖shift(suffix)‖²`) | DRIP's **token-wise de-instruction shift** — tries to keep the suffix tokens from being shifted. |
+| `gcgcancel_injection.sh` | `cancel` (`--cancel_loss_lambda`) | minimize cosine similarity between the suffix's hidden state and the cached instruction state | DRIP's **residual re-instruction fusion** — tries to cancel the re-anchored instruction signal. |
+
+Run them exactly like the base attack (each prompts for CUDA id + model path), e.g.:
+
+```bash
+bash scripts/evaluation/llama8b/gcgbypass_injection.sh   # adaptive: bypass the de-instruction shift
+bash scripts/evaluation/llama8b/gcgcancel_injection.sh   # adaptive: cancel the residual fusion
+bash scripts/evaluation/llama8b/attngcg_injection.sh     # adaptive: attention-steering
+```
+
+The `bypass`/`cancel` runs write a lambda-tagged CSV
+(`{bypass,cancel}-<lambda>-<defense>-<word>.csv`) so you can sweep the loss weight
+(`--bypass_loss_lambda` / `--cancel_loss_lambda`, default `10`) by editing the launcher.
+Mistral variants live under `scripts/evaluation/mistral7b/`.
