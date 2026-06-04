@@ -12,6 +12,24 @@ and reports two numbers per suite:
 
 > **Base model:** all AgentDojo experiments use **`meta-llama/Llama-3.1-8B-Instruct`**.
 
+## How it works
+
+```mermaid
+flowchart TD
+    U["user task"] --> A["agent (model under test)"]
+    A --> TC["tool call"]
+    TC --> O["tool output<br/>(4-role 'tool' slot = untrusted)<br/>+ injected instruction"]
+    O --> A
+    A --> D{"follow the injection?"}
+    D -- "no: finish the user task" --> UT(["Utility ✓"])
+    D -- "yes: do the attacker's task" --> SEC(["Security ✗ — attack lands"])
+```
+
+Injections hide in **tool outputs** (not the user turn). The agent loops
+tool-call → observation → next action until done; a run yields a **utility** score
+(did it finish the user task?) and a **security** score (did it resist the
+injection?).
+
 ## Chat format: 4 roles here vs. 3 roles in the main README
 
 This is the key difference from the rest of the repo, so it is worth stating up front.
@@ -28,6 +46,35 @@ In `--mode fuse` (DRIP), the fuse pipeline assigns the trusted/untrusted slots
 internally via `expert_labels`, so DRIP knows which tokens came from the untrusted `tool`
 role. In `--mode official`, the role used for tool outputs is controlled by
 `--tool-delimiter` (see the flag table below).
+
+## Training data (4-role / tool-calling)
+
+The 4-role models evaluated here are trained on a tool-calling DPO set built by
+[`data_generation/data_curation_drip_toolcall.py`](../../data_generation/data_curation_drip_toolcall.py).
+
+**Why mix in InjecAgent.** In plain text tasks the system instruction is fairly
+generic, so the model rarely has to rely on it. In **tool-calling** tasks the
+system instruction is critical — it carries the **tool specification** the agent
+must follow. Adding a small amount of InjecAgent data familiarizes the model with
+this tool-calling format (and with injections hidden in tool observations). It is
+only a small slice — about **1K** of the pairs; the bulk is Alpaca.
+
+- For each **InjecAgent** case (direct-harm `dh` + data-stealing `ds`), it builds
+  a symmetric `(chosen, rejected)` pair that share the same reasoning prefix so
+  both stay in-distribution:
+  - **chosen** — recognizes the injected text in the **tool observation** as
+    untrusted data and finishes the user's task (no attacker tool call);
+  - **rejected** — follows the injection and calls the attacker tool, with valid
+    arguments generated (and cached) by an LLM from the tool schema.
+- These InjecAgent pairs (~1K) are combined with the **Alpaca** DPO set and
+  shuffled into `datasets/alpaca_injecagent_dpo_combined.json` — **20,162 pairs**
+  total. **Alpaca is included to match Meta SecAlign's training mix**, so the
+  comparison against SecAlign is fair (same benign data source).
+
+```bash
+# needs an OpenAI key for the attacker-argument generation
+python -m data_generation.data_curation_drip_toolcall
+```
 
 ## Install
 
@@ -60,7 +107,7 @@ Start the vLLM server (it serves `Llama-3.1-8B-Instruct` under the name `local`)
 the benchmark in a second shell:
 
 ```bash
-bash run_local_vlm.sh   # terminal 1: start the local vLLM server, wait until it is ready
+bash testing/agentdojo/run_local_vlm.sh   # terminal 1: start the local vLLM server, wait until it is ready
 
 # terminal 2:
 python -m testing.agentdojo.run_agentdojo \
@@ -75,7 +122,7 @@ SecAlign is served as a LoRA adapter on top of the same base model, and it expec
 outputs in the dedicated `input` role, so add `--tool-delimiter input`:
 
 ```bash
-bash run_local_vlm_metasecalign.sh   # terminal 1: start the SecAlign vLLM server
+bash testing/agentdojo/run_local_vlm_metasecalign.sh   # terminal 1: start the SecAlign vLLM server
 
 # terminal 2:
 python -m testing.agentdojo.run_agentdojo \

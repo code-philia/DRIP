@@ -18,18 +18,20 @@ COMPLETION_TEMPLATE = (
 )
 
 
-def inject(clean_input: str, injection: str) -> str:
+def inject(clean_input: str, injection: str):
+    """Return (injected_input, insistence) — insistence is the marker actually
+    used (empty for the completion attack, which has no insistence phrase)."""
     r = random.random()
     if r < PROB_END:
         # Straightforward at end
-        return f"{clean_input} {INSISTENCE} {injection}"
+        return f"{clean_input} {INSISTENCE} {injection}", INSISTENCE
     elif r < PROB_END + PROB_BEGINNING:
         # Straightforward at beginning
-        return f"{INSISTENCE} {injection} {clean_input}"
+        return f"{INSISTENCE} {injection} {clean_input}", INSISTENCE
     else:
-        # Completion attack at end
+        # Completion attack at end (no insistence phrase)
         suffix = COMPLETION_TEMPLATE.format(injection=injection)
-        return f"{clean_input} {suffix}"
+        return f"{clean_input} {suffix}", ""
 
 
 def main():
@@ -63,13 +65,14 @@ def main():
         if z_prime.get("input", "").strip():
             injection += " " + z_prime["input"].strip()
 
-        injected_input = inject(z["input"].strip(), injection)
+        injected_input, insistence = inject(z["input"].strip(), injection)
 
         results.append({
             "instruction":    z["instruction"].strip(),
             "clean_input":    z["input"].strip(),
             "injected_input": injected_input,
             "injected_probe": injection,
+            "insistence":     insistence,
         })
 
     os.makedirs(os.path.dirname(args.output_path), exist_ok=True)

@@ -76,6 +76,7 @@ def main():
             "clean_input":    clean_input,
             "injected_input": inject(clean_input, injected_probe, insistence),
             "injected_probe": injected_probe,
+            "insistence":     insistence,
         })
 
     os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
