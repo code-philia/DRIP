@@ -50,7 +50,10 @@ class OptimizedAPIProcessor:
             injected_input = request["injected_input"]
             injected_probe = request["injected_probe"]
 
-            input_data_edited = injected_input.replace(INSISTENCE, "")
+            # Strip the insistence marker actually used for this sample (SEP uses
+            # a per-sample one); fall back to the constant for older data files.
+            insistence = request.get("insistence", INSISTENCE)
+            input_data_edited = injected_input.replace(insistence, "") if insistence else injected_input
 
             message = copy.deepcopy(system_message)
             message.append({
