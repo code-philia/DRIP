@@ -14,6 +14,20 @@ output appears), so the per-round judge is the binary witness check.
 **Metric** — ASR after up to `--max_iterations` refinement rounds, reported as
 exact-match / begin-with / in-response (same matching as the heuristic ASR).
 
+## How it works
+
+```mermaid
+flowchart LR
+    A["Attacker LLM<br/>propose / refine injection"] --> B["inject into data section"]
+    B --> C["target model response"]
+    C --> J{"witness present?"}
+    J -- "no: feed back response + score" --> A
+    J -- "yes" --> S(["success → ASR"])
+```
+
+The loop repeats up to `--max_iterations` rounds; each failure is fed back so the
+attacker refines its next attempt.
+
 ## Run
 
 Requires an OpenAI API key (the attacker LLM): `export OPENAI_API_KEY=...`.

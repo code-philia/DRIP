@@ -26,6 +26,19 @@ valid rate = parseable outputs / total   # outputs that produced a well-formed a
 
 Reported separately for `dh` and `ds`. Lower ASR = more robust.
 
+## How it works
+
+```mermaid
+flowchart LR
+    U["user task"] --> A["agent"]
+    A --> TL["tool call"]
+    TL --> O["tool observation<br/>+ injected instruction"]
+    O --> A
+    A --> D{"obey injection?"}
+    D -- "yes" --> X["harmful action / data leak<br/>→ attack success (ASR)"]
+    D -- "no" --> Y["continue user task<br/>→ robust"]
+```
+
 ## Run
 
 ```bash

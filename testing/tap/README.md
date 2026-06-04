@@ -13,6 +13,26 @@ The injected task is placed in the data section (`--inject_position`, default
 **Metric** — ASR after the bounded tree search, reported as exact-match /
 begin-with / in-response.
 
+## How it works
+
+```mermaid
+flowchart TD
+    R["seed injection"] --> B1["branch"]
+    R --> B2["branch"]
+    R --> B3["branch"]
+    B1 -. "off-topic: pruned ✂" .-> X1["dropped"]
+    B2 --> E2["query target<br/>+ judge score"]
+    B3 --> E3["query target<br/>+ judge score"]
+    E2 --> W["keep top-width<br/>by score"]
+    E3 --> W
+    W --> D["expand again<br/>(branching_factor)"]
+    D --> S(["success / depth reached"])
+```
+
+Each level branches every surviving candidate (`--branching_factor`), prunes
+off-topic ones, keeps the best `--width` by judge score, and stops at `--depth`
+or first success — exploring more of the attack space than PAIR's single chain.
+
 ## Run
 
 Requires an OpenAI API key (attacker + evaluator LLMs): `export OPENAI_API_KEY=...`.

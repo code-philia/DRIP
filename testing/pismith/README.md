@@ -13,6 +13,26 @@ target, reported by the test phase.
 > ⚠️ **You must train the attacker first, then test.** The test phase loads the
 > trained attacker adapter and will fail if it does not exist.
 
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph TRAIN["train.sh: GRPO loop, per target"]
+        direction LR
+        A["attacker LM"] --> N["sample N injections"]
+        N --> T["target model"]
+        T --> R{"witness present?"}
+        R --> RW["binary reward"]
+        RW --> U["GRPO update<br/>group-relative advantage"]
+        U --> A
+    end
+    TRAIN --> C[("attack_lm_final")]
+    C --> TEST["test.sh<br/>sample N → ASR@N / ASR@1"]
+```
+
+The attacker is **trained against a specific target** (the reward is whether the
+target executed the injection), then the trained adapter is loaded to attack it.
+
 ## 1. Train the attacker (required first)
 
 ```bash

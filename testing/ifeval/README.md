@@ -17,6 +17,15 @@ does not degrade ordinary instruction-following.
 Reported per-prompt and per-instruction. The headline number is usually
 **prompt-level strict accuracy**.
 
+## How it works
+
+```mermaid
+flowchart LR
+    I["verifiable instruction<br/>e.g. all-lowercase, ≥3 paragraphs"] --> M["model response"]
+    M --> V["deterministic verifier<br/>(no LLM judge)"]
+    V --> S["strict / loose accuracy"]
+```
+
 ## Run
 
 1. Generate responses:

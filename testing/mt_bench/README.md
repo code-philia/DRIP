@@ -10,6 +10,15 @@ quality.
 **Metric** — average GPT-4 judge score (overall and per category, shown on a
 radar chart).
 
+## How it works
+
+```mermaid
+flowchart LR
+    Q["open-ended question<br/>8 categories"] --> M["model answer"]
+    M --> J["GPT-4 judge"]
+    J --> S["score 1–10 → radar chart"]
+```
+
 ## Run
 
 1. Generate answers:

@@ -9,6 +9,15 @@ defense does not hurt general knowledge / reasoning.
 overall and optionally by category / subject. The question goes in the
 `instruction` slot (trusted), so DRIP applies no data-shift.
 
+## How it works
+
+```mermaid
+flowchart LR
+    Q["question + 4 choices<br/>(57 subjects)"] --> M["model"]
+    M --> P["pick A / B / C / D"]
+    P --> Acc["accuracy vs gold answer"]
+```
+
 ## Run
 
 1. Generate answers:
