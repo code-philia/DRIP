@@ -163,6 +163,21 @@ instead (QLoRA runs, or models trained earlier), merge them first:
 python -m training.merge_lora --adapter_path <adapter_dir> --output_path <merged_dir>
 ```
 
+### 3-role vs 4-role: train separately
+
+DRIP supports two chat formats, and you train a **separate** model for each (they
+use different data and a different delimiter):
+
+| | Eval targets | Training data | Delimiter | Launcher |
+|---|---|---|---|---|
+| **3-role** (text) | SEP, Alpaca injection, IFEval, MMLU, MT-Bench | SEP DPO pairs | `TextTextText` | `scripts/llama8b/sep/drip_sep.sh` |
+| **4-role** (tool-calling) | [AgentDojo](./testing/agentdojo/README.md) | Alpaca + InjecAgent combined DPO | `TextTextText-4roles` | `scripts/llama8b/agentdojo/drip_4roles.sh` |
+
+The 4-role launcher trains on `datasets/alpaca_injecagent_dpo_combined.json` with
+the `TextTextText-4roles` delimiter (`--attack TextTextText-4roles_None`). See the
+[AgentDojo training-data section](./testing/agentdojo/README.md#training-data-4-role--tool-calling)
+for how that data is built and why InjecAgent/Alpaca are mixed in.
+
 ---
 
 ## Evaluation
