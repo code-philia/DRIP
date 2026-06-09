@@ -8,7 +8,7 @@ FILENAME=$(basename "$DATA_PATH")
 PREFIX=${FILENAME%%_*}
 FSDP_CONFIG="training/config/fsdp_config.json"
 DELIMITER="TextTextText"
-SAVE_PATH="${BASE_MODEL}-${DELIMITER}-sep-${BASELINE}"
+SAVE_PATH="${BASE_MODEL}-${DELIMITER}-${BASELINE}"
 
 BATCH_SIZE=4
 EPOCH=1

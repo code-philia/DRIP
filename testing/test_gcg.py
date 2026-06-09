@@ -105,6 +105,7 @@ def load_delimiters(model_name: str, path: str) -> str:
     for key in ("SpclSpclSpcl",
                 "TextTextTextMistral",
                 "TextTextTextQwen",
+                "TextTextText-4roles",
                 "TextTextText", ):
         if key in path:
             return key

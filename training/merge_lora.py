@@ -1,11 +1,4 @@
 """Merge a trained LoRA adapter into its base model and save a full checkpoint.
-
-Use this for checkpoints saved as adapters — e.g. QLoRA runs, or models trained
-before train_unified.py started merging at save time. It loads the model exactly
-the way evaluation does (testing/test.py `load_full_model`, load_as_adapter=True),
-so the merged result is guaranteed consistent with eval, then merges and saves a
-standalone checkpoint that the default eval path can load directly.
-
 Usage:
     python -m training.merge_lora \
         --adapter_path  out/Meta-Llama-3-8B-Instruct-TextTextText-sep-drip \

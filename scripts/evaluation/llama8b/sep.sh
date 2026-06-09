@@ -66,13 +66,14 @@ fi
 echo "Executing test..."
 
 CMD_ARGS="--model_name_or_path $MODEL_PATH $EXTRA_FLAGS"
+CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.sep.test_sep $CMD_ARGS"
 
 echo
 echo "⚙ Running:"
-echo "CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.sep.test_sep $CMD_ARGS --base_model_path meta-llama/Meta-Llama-3-8B-Instruct"
+echo "$CMD"
 echo
 
 # -----------------------------
 # Execute
 # -----------------------------
-CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.sep.test_sep $CMD_ARGS --base_model_path meta-llama/Meta-Llama-3-8B-Instruct
+eval $CMD

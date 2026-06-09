@@ -60,7 +60,7 @@ fi
 
 echo "Executing test..."
 CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.ifeval.test_ifeval \
---model_name_or_path $MODEL_PATH --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
+--model_name_or_path $MODEL_PATH  \
 $EXTRA_FLAGS"
 
 echo

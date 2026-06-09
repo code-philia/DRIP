@@ -52,7 +52,7 @@ fi
 
 echo "Executing test..."
 CMD="CUDA_VISIBLE_DEVICES=$CUDA_ID python -m testing.mt_bench.gen_model_answer \
---model-path $MODEL_PATH --model-id $MODEL_ID --base_model_path mistralai/Mistral-7B-Instruct-v0.3 \
+--model-path $MODEL_PATH --model-id $MODEL_ID  \
 $EXTRA_FLAGS"
 
 echo

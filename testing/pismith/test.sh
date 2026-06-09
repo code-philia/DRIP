@@ -89,8 +89,7 @@ fi
 # ── Build & run ─────────────────────────────────────────────────────────────
 CMD=(python -m "$test_module"
      -m "$MODEL_PATH"
-     --attack_model_path "$attack_path"
-     --attack_source "$ATTACK_SOURCE")
+     --attack_model_path "$attack_path")
 
 if [[ -n "$customized_class" ]]; then
     CMD+=(--customized_model_class "$customized_class")
