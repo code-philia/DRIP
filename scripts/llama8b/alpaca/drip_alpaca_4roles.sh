@@ -21,7 +21,7 @@ export CUDA_VISIBLE_DEVICES=1,2,3,5,6,7
 
 SCRIPT_PATH="train_unified.py"
 BASELINE="drip"
-BASE_MODEL="/mnt/nvme0n1/ruofan/hf_hub/meta-llama/Llama-3.1-8B-Instruct"
+BASE_MODEL="meta-llama/Llama-3.1-8B-Instruct"
 BASE_MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
 DATA_PATH="datasets/alpaca_injecagent_dpo_combined.json"
 FILENAME=$(basename "$DATA_PATH")
