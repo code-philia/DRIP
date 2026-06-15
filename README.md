@@ -194,56 +194,26 @@ Face Hub. They are published as **LoRA adapters**, so after downloading you must
 **merge** each one into its base model before evaluation (this produces the full
 checkpoint the eval scripts load).
 
-| Checkpoint | Base model | Template | Tool calls | Hugging Face |
+| Repo (`Kelsey98/…`) | Base model (`--base_model_path`) | Template | Model class (`--customized_model_class`) | Tool calls |
 |---|---|---|---|---|
-| Alpaca + InjecAgent | `meta-llama/Llama-3.1-8B-Instruct` | 4-role (`TextTextText-4roles`) | ✅ supported | [`Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip`](https://huggingface.co/Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip) |
-| SEP | `meta-llama/Meta-Llama-3-8B-Instruct` | 3-role (`TextTextText`) | — | [`Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip`](https://huggingface.co/Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip) |
-| Alpaca | `mistralai/Mistral-7B-Instruct-v0.3` | 3-role (`TextTextTextMistral`) | — | [`Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip`](https://huggingface.co/Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip) |
+| [`Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip`](https://huggingface.co/Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip) | `meta-llama/Llama-3.1-8B-Instruct` | 4-role | `LlamaForCausalLMDRIP` | ✅ |
+| [`Meta-Llama-3-8B-Instruct-TextTextText-drip`](https://huggingface.co/Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip) | `meta-llama/Meta-Llama-3-8B-Instruct` | 3-role | `LlamaForCausalLMDRIP` | — |
+| [`Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip`](https://huggingface.co/Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip) | `mistralai/Mistral-7B-Instruct-v0.3` | 3-role | `MistralForCausalLMDRIP` | — |
 
-**Download** the adapter you want (into a local directory), then **merge** it. The
-`--base_model_path` and `--customized_model_class` must match the base model and
-model family of that checkpoint.
-
-**Llama-3.1-8B-Instruct · Alpaca + InjecAgent · 4-role / tool-calling**
+**Download** the adapter, then **merge** it — substituting `REPO`, `--base_model_path`,
+and `--customized_model_class` from the row above:
 
 ```bash
-huggingface-cli download Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip \
-    --local-dir meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip
+REPO=Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip   # pick one from the table
 
+huggingface-cli download Kelsey98/$REPO --local-dir $REPO
 CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
-    --adapter_path meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip/ \
-    --output_path  meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip-merged/ \
+    --adapter_path "$REPO/" --output_path "$REPO-merged/" \
     --base_model_path meta-llama/Llama-3.1-8B-Instruct \
     --customized_model_class LlamaForCausalLMDRIP
 ```
 
-**Meta-Llama-3-8B-Instruct · SEP · 3-role**
-
-```bash
-huggingface-cli download Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip \
-    --local-dir meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip
-
-CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
-    --adapter_path meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip/ \
-    --output_path  meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip-merged/ \
-    --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
-    --customized_model_class LlamaForCausalLMDRIP
-```
-
-**Mistral-7B-Instruct-v0.3 · Alpaca · 3-role**
-
-```bash
-huggingface-cli download Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip \
-    --local-dir mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip
-
-CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
-    --adapter_path mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip/ \
-    --output_path  mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip-merged/ \
-    --base_model_path mistralai/Mistral-7B-Instruct-v0.3 \
-    --customized_model_class MistralForCausalLMDRIP
-```
-
-Pass the **merged** path (`...-merged/`) as the model path in the
+Pass the **merged** path (`$REPO-merged/`) as the model path in the
 [evaluation](#evaluation) scripts.
 
 ---
