@@ -25,8 +25,8 @@ DRIP introduces two architectural modifications:
   - [1. Download base model checkpoints](#1-download-base-model-checkpoints)
   - [2. Create the environment](#2-create-the-environment)
   - [3. Download the data](#3-download-the-data)
-  - [4. (Optional) Download pretrained checkpoints](#4-optional-download-pretrained-checkpoints)
 - [Training](#training)
+- [(Optional) Download pretrained checkpoints](#optional-download-pretrained-checkpoints)
 - [Evaluation](#evaluation)
   - [SEP score](#sep-score)
   - [ASR](#asr)
@@ -145,7 +145,49 @@ curated files used by the training and evaluation scripts.
 To regenerate the DRIP training data from scratch instead, see
 [`data_generation/README.md`](./data_generation/README.md).
 
-### 4. (Optional) Download pretrained checkpoints
+---
+
+## Training
+
+Pick the script that matches your **base model** and the **dataset** you want to
+train on. The scripts are grouped into per-dataset folders (`sep/`, `alpaca/`) —
+to train on SEP run the `sep/` script, to train on Alpaca go to the `alpaca/`
+folder and run the matching one there:
+
+| Base model | Dataset | Command |
+|---|---|---|
+| Meta-Llama-3-8B-Instruct | SEP | `bash ./scripts/llama8b/sep/drip_sep.sh` |
+| Llama-3.1-8B-Instruct | Alpaca (3-role) | `bash ./scripts/llama8b/alpaca/drip_alpaca.sh` |
+| Llama-3.1-8B-Instruct | Alpaca + InjecAgent (4-role / tool-calling) | `bash ./scripts/llama8b/alpaca/drip_alpaca_4roles.sh` |
+| Mistral-7B-Instruct-v0.3 | SEP | `bash ./scripts/mistral7b/sep/drip_sep.sh` |
+| Mistral-7B-Instruct-v0.3 | Alpaca (3-role) | `bash ./scripts/mistral7b/alpaca/drip_alpaca.sh` |
+
+Training merges the LoRA adapter into the base weights and saves a **full
+checkpoint** that evaluation can load directly. For checkpoints saved as adapters
+instead (QLoRA runs, or models trained earlier), merge them first:
+
+```bash
+python -m training.merge_lora --adapter_path <adapter_dir> --output_path <merged_dir>
+```
+
+### 3-role vs 4-role: train separately
+
+DRIP supports two chat formats, and you train a **separate** model for each (they
+use different data and a different delimiter):
+
+| | Eval targets | Training data | Delimiter | Launcher |
+|---|---|---|---|---|
+| **3-role** (text) | SEP, Alpaca injection, IFEval, MMLU, MT-Bench | SEP DPO pairs | `TextTextText` | `scripts/llama8b/sep/drip_sep.sh` |
+| **4-role** (tool-calling) | [AgentDojo](./testing/agentdojo/README.md) | Alpaca + InjecAgent combined DPO | `TextTextText-4roles` | `scripts/llama8b/agentdojo/drip_4roles.sh` |
+
+The 4-role launcher trains on `datasets/alpaca_injecagent_dpo_combined.json` with
+the `TextTextText-4roles` delimiter (`--attack TextTextText-4roles_None`). See the
+[AgentDojo training-data section](./testing/agentdojo/README.md#training-data-4-role--tool-calling)
+for how that data is built and why InjecAgent/Alpaca are mixed in.
+
+---
+
+## (Optional) Download pretrained checkpoints
 
 If you would rather skip training, we release the DRIP adapters on the Hugging
 Face Hub. They are published as **LoRA adapters**, so after downloading you must
@@ -203,46 +245,6 @@ CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
 
 Pass the **merged** path (`...-merged/`) as the model path in the
 [evaluation](#evaluation) scripts.
-
----
-
-## Training
-
-Pick the script that matches your **base model** and the **dataset** you want to
-train on. The scripts are grouped into per-dataset folders (`sep/`, `alpaca/`) —
-to train on SEP run the `sep/` script, to train on Alpaca go to the `alpaca/`
-folder and run the matching one there:
-
-| Base model | Dataset | Command |
-|---|---|---|
-| Meta-Llama-3-8B-Instruct | SEP | `bash ./scripts/llama8b/sep/drip_sep.sh` |
-| Llama-3.1-8B-Instruct | Alpaca (3-role) | `bash ./scripts/llama8b/alpaca/drip_alpaca.sh` |
-| Llama-3.1-8B-Instruct | Alpaca + InjecAgent (4-role / tool-calling) | `bash ./scripts/llama8b/alpaca/drip_alpaca_4roles.sh` |
-| Mistral-7B-Instruct-v0.3 | SEP | `bash ./scripts/mistral7b/sep/drip_sep.sh` |
-| Mistral-7B-Instruct-v0.3 | Alpaca (3-role) | `bash ./scripts/mistral7b/alpaca/drip_alpaca.sh` |
-
-Training merges the LoRA adapter into the base weights and saves a **full
-checkpoint** that evaluation can load directly. For checkpoints saved as adapters
-instead (QLoRA runs, or models trained earlier), merge them first:
-
-```bash
-python -m training.merge_lora --adapter_path <adapter_dir> --output_path <merged_dir>
-```
-
-### 3-role vs 4-role: train separately
-
-DRIP supports two chat formats, and you train a **separate** model for each (they
-use different data and a different delimiter):
-
-| | Eval targets | Training data | Delimiter | Launcher |
-|---|---|---|---|---|
-| **3-role** (text) | SEP, Alpaca injection, IFEval, MMLU, MT-Bench | SEP DPO pairs | `TextTextText` | `scripts/llama8b/sep/drip_sep.sh` |
-| **4-role** (tool-calling) | [AgentDojo](./testing/agentdojo/README.md) | Alpaca + InjecAgent combined DPO | `TextTextText-4roles` | `scripts/llama8b/agentdojo/drip_4roles.sh` |
-
-The 4-role launcher trains on `datasets/alpaca_injecagent_dpo_combined.json` with
-the `TextTextText-4roles` delimiter (`--attack TextTextText-4roles_None`). See the
-[AgentDojo training-data section](./testing/agentdojo/README.md#training-data-4-role--tool-calling)
-for how that data is built and why InjecAgent/Alpaca are mixed in.
 
 ---
 
@@ -320,7 +322,7 @@ Optimization/search-based attackers that adapt to the target — each has its ow
 
 DRIP is developed and evaluated under a deliberately scoped threat model. The following limitations matter when applying it elsewhere:
 
-- **Text-to-text attacks.** Both the primary task and the injected task are text instruction-following — the injected content is natural-language instructions embedded in a text data section. We do not specifically optimize for tool-calling agents, and in tool-calling scenarios the utility is expected to drop (the [AgentDojo](./testing/agentdojo/README.md) setting illustrates this regime).
+- **Text-to-text attacks.** Our primary setting is text instruction-following — the injected content is natural-language instructions embedded in a text data section. For tool-calling agents we additionally release a dedicated **4-role** checkpoint trained with InjecAgent data and evaluated on [AgentDojo](./testing/agentdojo/README.md) (see [pretrained checkpoints](#optional-download-pretrained-checkpoints)); the text-only (3-role) models are not tuned for that regime, so use the 4-role checkpoint for tool-calling.
 - **Dense architectures.** The representation editing is designed and validated on dense transformer architectures. We have not fully tested it on Mixture-of-Experts (MoE) models, where inserting new layers poses additional challenges. For MoE backbones we recommend our data-curation recipe together with the residual re-instruction fusion, while the de-instruction shift layer may be unnecessary (and harder to inject).
 - **Single modality.** Extending DRIP to multi-modal agents — GUI agents, browser use, OS use — requires new adaptation that is outside the scope of this work.
 
