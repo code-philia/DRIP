@@ -25,6 +25,7 @@ DRIP introduces two architectural modifications:
   - [1. Download base model checkpoints](#1-download-base-model-checkpoints)
   - [2. Create the environment](#2-create-the-environment)
   - [3. Download the data](#3-download-the-data)
+  - [4. (Optional) Download pretrained checkpoints](#4-optional-download-pretrained-checkpoints)
 - [Training](#training)
 - [Evaluation](#evaluation)
   - [SEP score](#sep-score)
@@ -128,12 +129,12 @@ Our setup uses `torch==2.8.0` on the following hardware.
 ### 3. Download the data
 
 The curated DRIP training and evaluation data is archived on Zenodo
-(DOI: [10.5281/zenodo.20325769](https://doi.org/10.5281/zenodo.20325769)).
+(DOI: [10.5281/zenodo.20603331](https://doi.org/10.5281/zenodo.20603331)).
 
 Download and extract it into the repository root:
 
 ```bash
-wget -O datasets.zip "https://zenodo.org/records/20325769/files/datasets.zip?download=1"
+wget -O datasets.zip "https://zenodo.org/records/20603331/files/datasets.zip?download=1"
 unzip datasets.zip
 mv datasets1/ datasets/ # rename it to datasets/
 ```
@@ -144,16 +145,80 @@ curated files used by the training and evaluation scripts.
 To regenerate the DRIP training data from scratch instead, see
 [`data_generation/README.md`](./data_generation/README.md).
 
+### 4. (Optional) Download pretrained checkpoints
+
+If you would rather skip training, we release the DRIP adapters on the Hugging
+Face Hub. They are published as **LoRA adapters**, so after downloading you must
+**merge** each one into its base model before evaluation (this produces the full
+checkpoint the eval scripts load).
+
+| Checkpoint | Base model | Template | Tool calls | Hugging Face |
+|---|---|---|---|---|
+| Alpaca + InjecAgent | `meta-llama/Llama-3.1-8B-Instruct` | 4-role (`TextTextText-4roles`) | ✅ supported | [`Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip`](https://huggingface.co/Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip) |
+| SEP | `meta-llama/Meta-Llama-3-8B-Instruct` | 3-role (`TextTextText`) | — | [`Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip`](https://huggingface.co/Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip) |
+| Alpaca | `mistralai/Mistral-7B-Instruct-v0.3` | 3-role (`TextTextTextMistral`) | — | [`Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip`](https://huggingface.co/Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip) |
+
+**Download** the adapter you want (into a local directory), then **merge** it. The
+`--base_model_path` and `--customized_model_class` must match the base model and
+model family of that checkpoint.
+
+**Llama-3.1-8B-Instruct · Alpaca + InjecAgent · 4-role / tool-calling**
+
+```bash
+huggingface-cli download Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip \
+    --local-dir meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip
+
+CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
+    --adapter_path meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip/ \
+    --output_path  meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip-merged/ \
+    --base_model_path meta-llama/Llama-3.1-8B-Instruct \
+    --customized_model_class LlamaForCausalLMDRIP
+```
+
+**Meta-Llama-3-8B-Instruct · SEP · 3-role**
+
+```bash
+huggingface-cli download Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip \
+    --local-dir meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip
+
+CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
+    --adapter_path meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip/ \
+    --output_path  meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip-merged/ \
+    --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
+    --customized_model_class LlamaForCausalLMDRIP
+```
+
+**Mistral-7B-Instruct-v0.3 · Alpaca · 3-role**
+
+```bash
+huggingface-cli download Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip \
+    --local-dir mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip
+
+CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
+    --adapter_path mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip/ \
+    --output_path  mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip-merged/ \
+    --base_model_path mistralai/Mistral-7B-Instruct-v0.3 \
+    --customized_model_class MistralForCausalLMDRIP
+```
+
+Pass the **merged** path (`...-merged/`) as the model path in the
+[evaluation](#evaluation) scripts.
+
 ---
 
 ## Training
 
-Pick the script that matches your base model:
+Pick the script that matches your **base model** and the **dataset** you want to
+train on. The scripts are grouped into per-dataset folders (`sep/`, `alpaca/`) —
+to train on SEP run the `sep/` script, to train on Alpaca go to the `alpaca/`
+folder and run the matching one there:
 
-| Base model | Command |
-|---|---|
-| Meta-Llama-3-8B-Instruct | `bash ./scripts/llama8b/sep/drip_sep.sh` |
-| Mistral-7B-Instruct-v0.3 | `bash ./scripts/mistral7b/sep/drip_sep.sh` |
+| Base model | Dataset | Command |
+|---|---|---|
+| Meta-Llama-3-8B-Instruct | SEP | `bash ./scripts/llama8b/sep/drip_sep.sh` |
+| Llama-3.1-8B-Instruct | Alpaca (3-role) | `bash ./scripts/llama8b/alpaca/drip_alpaca.sh` |
+| Llama-3.1-8B-Instruct | Alpaca + InjecAgent (4-role / tool-calling) | `bash ./scripts/llama8b/alpaca/drip_alpaca_4roles.sh` |
+| Mistral-7B-Instruct-v0.3 | SEP | `bash ./scripts/mistral7b/sep/drip_sep.sh` |
 
 Training merges the LoRA adapter into the base weights and saves a **full
 checkpoint** that evaluation can load directly. For checkpoints saved as adapters
