@@ -235,7 +235,7 @@ class Qwen3ForCausalLMDRIP(transformers.Qwen3ForCausalLM):
 
                 first_resp_indices = _get_last_segment_start(self.response_label, expert_labels)
                 resp_delm_len = len(self.config.response_delm_ids)
-                end_indices = (first_resp_indices + resp_delm_len - 1).clamp(max=expert_labels.shape[1] - 1)
+                end_indices = (first_resp_indices + resp_delm_len).clamp(max=expert_labels.shape[1] - 1)
                 end_state = hidden_states[batch_idx, end_indices]
 
                 fuse_factor = torch.sigmoid(self.residual_weight)
