@@ -208,12 +208,17 @@ Pass the **merged** path (`...-merged/`) as the model path in the
 
 ## Training
 
-Pick the script that matches your base model:
+Pick the script that matches your **base model** and the **dataset** you want to
+train on. The scripts are grouped into per-dataset folders (`sep/`, `alpaca/`) —
+to train on SEP run the `sep/` script, to train on Alpaca go to the `alpaca/`
+folder and run the matching one there:
 
-| Base model | Command |
-|---|---|
-| Meta-Llama-3-8B-Instruct | `bash ./scripts/llama8b/sep/drip_sep.sh` |
-| Mistral-7B-Instruct-v0.3 | `bash ./scripts/mistral7b/sep/drip_sep.sh` |
+| Base model | Dataset | Command |
+|---|---|---|
+| Meta-Llama-3-8B-Instruct | SEP | `bash ./scripts/llama8b/sep/drip_sep.sh` |
+| Meta-Llama-3-8B-Instruct | Alpaca (3-role) | `bash ./scripts/llama8b/alpaca/drip_alpaca.sh` |
+| Meta-Llama-3-8B-Instruct | Alpaca + InjecAgent (4-role / tool-calling) | `bash ./scripts/llama8b/alpaca/drip_alpaca_4roles.sh` |
+| Mistral-7B-Instruct-v0.3 | SEP | `bash ./scripts/mistral7b/sep/drip_sep.sh` |
 
 Training merges the LoRA adapter into the base weights and saves a **full
 checkpoint** that evaluation can load directly. For checkpoints saved as adapters
