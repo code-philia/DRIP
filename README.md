@@ -25,8 +25,8 @@ DRIP introduces two architectural modifications:
   - [1. Download base model checkpoints](#1-download-base-model-checkpoints)
   - [2. Create the environment](#2-create-the-environment)
   - [3. Download the data](#3-download-the-data)
-  - [4. (Optional) Download pretrained checkpoints](#4-optional-download-pretrained-checkpoints)
 - [Training](#training)
+- [(Optional) Download pretrained checkpoints](#optional-download-pretrained-checkpoints)
 - [Evaluation](#evaluation)
   - [SEP score](#sep-score)
   - [ASR](#asr)
@@ -145,65 +145,6 @@ curated files used by the training and evaluation scripts.
 To regenerate the DRIP training data from scratch instead, see
 [`data_generation/README.md`](./data_generation/README.md).
 
-### 4. (Optional) Download pretrained checkpoints
-
-If you would rather skip training, we release the DRIP adapters on the Hugging
-Face Hub. They are published as **LoRA adapters**, so after downloading you must
-**merge** each one into its base model before evaluation (this produces the full
-checkpoint the eval scripts load).
-
-| Checkpoint | Base model | Template | Tool calls | Hugging Face |
-|---|---|---|---|---|
-| Alpaca + InjecAgent | `meta-llama/Llama-3.1-8B-Instruct` | 4-role (`TextTextText-4roles`) | ✅ supported | [`Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip`](https://huggingface.co/Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip) |
-| SEP | `meta-llama/Meta-Llama-3-8B-Instruct` | 3-role (`TextTextText`) | — | [`Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip`](https://huggingface.co/Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip) |
-| Alpaca | `mistralai/Mistral-7B-Instruct-v0.3` | 3-role (`TextTextTextMistral`) | — | [`Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip`](https://huggingface.co/Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip) |
-
-**Download** the adapter you want (into a local directory), then **merge** it. The
-`--base_model_path` and `--customized_model_class` must match the base model and
-model family of that checkpoint.
-
-**Llama-3.1-8B-Instruct · Alpaca + InjecAgent · 4-role / tool-calling**
-
-```bash
-huggingface-cli download Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip \
-    --local-dir meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip
-
-CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
-    --adapter_path meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip/ \
-    --output_path  meta-llama/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip-merged/ \
-    --base_model_path meta-llama/Llama-3.1-8B-Instruct \
-    --customized_model_class LlamaForCausalLMDRIP
-```
-
-**Meta-Llama-3-8B-Instruct · SEP · 3-role**
-
-```bash
-huggingface-cli download Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip \
-    --local-dir meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip
-
-CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
-    --adapter_path meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip/ \
-    --output_path  meta-llama/Meta-Llama-3-8B-Instruct-TextTextText-drip-merged/ \
-    --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
-    --customized_model_class LlamaForCausalLMDRIP
-```
-
-**Mistral-7B-Instruct-v0.3 · Alpaca · 3-role**
-
-```bash
-huggingface-cli download Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip \
-    --local-dir mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip
-
-CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
-    --adapter_path mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip/ \
-    --output_path  mistralai/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip-merged/ \
-    --base_model_path mistralai/Mistral-7B-Instruct-v0.3 \
-    --customized_model_class MistralForCausalLMDRIP
-```
-
-Pass the **merged** path (`...-merged/`) as the model path in the
-[evaluation](#evaluation) scripts.
-
 ---
 
 ## Training
@@ -219,6 +160,7 @@ folder and run the matching one there:
 | Llama-3.1-8B-Instruct | Alpaca (3-role) | `bash ./scripts/llama8b/alpaca/drip_alpaca.sh` |
 | Llama-3.1-8B-Instruct | Alpaca + InjecAgent (4-role / tool-calling) | `bash ./scripts/llama8b/alpaca/drip_alpaca_4roles.sh` |
 | Mistral-7B-Instruct-v0.3 | SEP | `bash ./scripts/mistral7b/sep/drip_sep.sh` |
+| Mistral-7B-Instruct-v0.3 | Alpaca (3-role) | `bash ./scripts/mistral7b/alpaca/drip_alpaca.sh` |
 
 Training merges the LoRA adapter into the base weights and saves a **full
 checkpoint** that evaluation can load directly. For checkpoints saved as adapters
@@ -242,6 +184,55 @@ The 4-role launcher trains on `datasets/alpaca_injecagent_dpo_combined.json` wit
 the `TextTextText-4roles` delimiter (`--attack TextTextText-4roles_None`). See the
 [AgentDojo training-data section](./testing/agentdojo/README.md#training-data-4-role--tool-calling)
 for how that data is built and why InjecAgent/Alpaca are mixed in.
+
+**What the roles mean — where the untrusted data goes.** A "role" is just the
+delimiter that wraps the untrusted/injected segment. The exact tokens depend on
+the base model's chat template (see [`config.py`](./config.py)):
+
+- **Llama-3.1** has a native tool (`ipython`) role, so both formats are available:
+  - **3-role** (`TextTextText`) — untrusted data in the **`user`** turn:
+    `<|eot_id|><|start_header_id|>user<|end_header_id|>`
+  - **4-role** (`TextTextText-4roles`) — untrusted data in the **`ipython`** turn:
+    `<|eot_id|><|start_header_id|>ipython<|end_header_id|>`
+- **Meta-Llama-3** has **no** tool role, so only **3-role** is possible — untrusted
+  data always sits in the `user` turn.
+- **Mistral-7B** (`TextTextTextMistral`) has no separate role; the untrusted data
+  sits **between `<</SYS>>` and `[/INST]`** — delimiters `['<s>[INST] <<SYS>>', ' <</SYS>>', '[/INST]']`.
+
+> For comparison, Meta SecAlign adds its own dedicated **`input`** role
+> (`<|eot_id|><|start_header_id|>input<|end_header_id|>`) for the untrusted segment;
+> DRIP instead reuses Llama's native `ipython` role for 4-role tool-calling.
+
+---
+
+## (Optional) Download pretrained checkpoints
+
+If you would rather skip training, we release the DRIP adapters on the Hugging
+Face Hub. They are published as **LoRA adapters**, so after downloading you must
+**merge** each one into its base model before evaluation (this produces the full
+checkpoint the eval scripts load).
+
+| Repo (`Kelsey98/…`) | Base model (`--base_model_path`) | Template | Model class (`--customized_model_class`) | Tool calls |
+|---|---|---|---|---|
+| [`Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip`](https://huggingface.co/Kelsey98/Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip) | `meta-llama/Llama-3.1-8B-Instruct` | 4-role | `LlamaForCausalLMDRIP` | ✅ |
+| [`Meta-Llama-3-8B-Instruct-TextTextText-drip`](https://huggingface.co/Kelsey98/Meta-Llama-3-8B-Instruct-TextTextText-drip) | `meta-llama/Meta-Llama-3-8B-Instruct` | 3-role | `LlamaForCausalLMDRIP` | — |
+| [`Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip`](https://huggingface.co/Kelsey98/Mistral-7B-Instruct-v0.3-TextTextTextMistral-drip) | `mistralai/Mistral-7B-Instruct-v0.3` | 3-role | `MistralForCausalLMDRIP` | — |
+
+**Download** the adapter, then **merge** it — substituting `REPO`, `--base_model_path`,
+and `--customized_model_class` from the row above:
+
+```bash
+REPO=Llama-3.1-8B-Instruct-TextTextText-4roles-toolcall-drip   # pick one from the table
+
+huggingface-cli download Kelsey98/$REPO --local-dir $REPO
+CUDA_VISIBLE_DEVICES=0 python -m training.merge_lora \
+    --adapter_path "$REPO/" --output_path "$REPO-merged/" \
+    --base_model_path meta-llama/Llama-3.1-8B-Instruct \
+    --customized_model_class LlamaForCausalLMDRIP
+```
+
+Pass the **merged** path (`$REPO-merged/`) as the model path in the
+[evaluation](#evaluation) scripts.
 
 ---
 
@@ -319,7 +310,7 @@ Optimization/search-based attackers that adapt to the target — each has its ow
 
 DRIP is developed and evaluated under a deliberately scoped threat model. The following limitations matter when applying it elsewhere:
 
-- **Text-to-text attacks.** Both the primary task and the injected task are text instruction-following — the injected content is natural-language instructions embedded in a text data section. We do not specifically optimize for tool-calling agents, and in tool-calling scenarios the utility is expected to drop (the [AgentDojo](./testing/agentdojo/README.md) setting illustrates this regime).
+- **Text-to-text attacks.** Our primary setting is text instruction-following — the injected content is natural-language instructions embedded in a text data section. For tool-calling agents we additionally release a dedicated **4-role** checkpoint trained with InjecAgent data and evaluated on [AgentDojo](./testing/agentdojo/README.md) (see [pretrained checkpoints](#optional-download-pretrained-checkpoints)); the text-only (3-role) models are not tuned for that regime, so use the 4-role checkpoint for tool-calling.
 - **Dense architectures.** The representation editing is designed and validated on dense transformer architectures. We have not fully tested it on Mixture-of-Experts (MoE) models, where inserting new layers poses additional challenges. For MoE backbones we recommend our data-curation recipe together with the residual re-instruction fusion, while the de-instruction shift layer may be unnecessary (and harder to inject).
 - **Single modality.** Extending DRIP to multi-modal agents — GUI agents, browser use, OS use — requires new adaptation that is outside the scope of this work.
 
