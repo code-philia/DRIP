@@ -216,8 +216,8 @@ folder and run the matching one there:
 | Base model | Dataset | Command |
 |---|---|---|
 | Meta-Llama-3-8B-Instruct | SEP | `bash ./scripts/llama8b/sep/drip_sep.sh` |
-| Meta-Llama-3-8B-Instruct | Alpaca (3-role) | `bash ./scripts/llama8b/alpaca/drip_alpaca.sh` |
-| Meta-Llama-3-8B-Instruct | Alpaca + InjecAgent (4-role / tool-calling) | `bash ./scripts/llama8b/alpaca/drip_alpaca_4roles.sh` |
+| Llama-3.1-8B-Instruct | Alpaca (3-role) | `bash ./scripts/llama8b/alpaca/drip_alpaca.sh` |
+| Llama-3.1-8B-Instruct | Alpaca + InjecAgent (4-role / tool-calling) | `bash ./scripts/llama8b/alpaca/drip_alpaca_4roles.sh` |
 | Mistral-7B-Instruct-v0.3 | SEP | `bash ./scripts/mistral7b/sep/drip_sep.sh` |
 
 Training merges the LoRA adapter into the base weights and saves a **full
