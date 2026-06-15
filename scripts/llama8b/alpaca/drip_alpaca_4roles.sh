@@ -1,24 +1,5 @@
 #!/bin/bash
 
-export HF_ENDPOINT=https://hf-mirror.com
-export HF_HOME=/mnt/nvme0n1/ruofan/hf_hub/
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-export OMP_NUM_THREADS=4
-export MKL_NUM_THREADS=4
-export NCCL_NTHREADS=8
-export TOKENIZERS_PARALLELISM=false
-export WANDB_MODE=disabled
-
-# === NCCL hang protection ===
-export TORCH_NCCL_BLOCKING_WAIT=1
-export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-export TORCH_NCCL_TIMEOUT_MS=1800000
-export TORCH_NCCL_TRACE_BUFFER_SIZE=20480
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
-export CUDA_VISIBLE_DEVICES=1,2,3,5,6,7
-
-
 SCRIPT_PATH="train_unified.py"
 BASELINE="drip"
 BASE_MODEL="meta-llama/Llama-3.1-8B-Instruct"
