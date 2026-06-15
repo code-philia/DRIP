@@ -185,6 +185,24 @@ the `TextTextText-4roles` delimiter (`--attack TextTextText-4roles_None`). See t
 [AgentDojo training-data section](./testing/agentdojo/README.md#training-data-4-role--tool-calling)
 for how that data is built and why InjecAgent/Alpaca are mixed in.
 
+**What the roles mean — where the untrusted data goes.** A "role" is just the
+delimiter that wraps the untrusted/injected segment. The exact tokens depend on
+the base model's chat template (see [`config.py`](./config.py)):
+
+- **Llama-3.1** has a native tool (`ipython`) role, so both formats are available:
+  - **3-role** (`TextTextText`) — untrusted data in the **`user`** turn:
+    `<|eot_id|><|start_header_id|>user<|end_header_id|>`
+  - **4-role** (`TextTextText-4roles`) — untrusted data in the **`ipython`** turn:
+    `<|eot_id|><|start_header_id|>ipython<|end_header_id|>`
+- **Meta-Llama-3** has **no** tool role, so only **3-role** is possible — untrusted
+  data always sits in the `user` turn.
+- **Mistral-7B** (`TextTextTextMistral`) has no separate role; the untrusted data
+  sits **between `<</SYS>>` and `[/INST]`** — delimiters `['<s>[INST] <<SYS>>', ' <</SYS>>', '[/INST]']`.
+
+> For comparison, Meta SecAlign adds its own dedicated **`input`** role
+> (`<|eot_id|><|start_header_id|>input<|end_header_id|>`) for the untrusted segment;
+> DRIP instead reuses Llama's native `ipython` role for 4-role tool-calling.
+
 ---
 
 ## (Optional) Download pretrained checkpoints
