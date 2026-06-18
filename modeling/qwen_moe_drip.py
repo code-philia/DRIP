@@ -41,155 +41,6 @@ class Qwen3MoeDRIPConfig(Qwen3MoeConfig):
         self.response_label    = kwargs.get('response_label',  self.num_labels - 1)
 
 
-class Qwen3MoeModel(transformers.Qwen3MoeModel):
-    def __init__(self, config: Qwen3MoeDRIPConfig):
-        super().__init__(config)
-        self.config = config
-        self.deinstruction_shift = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
-        nn.init.zeros_(self.deinstruction_shift.weight)
-        nn.init.zeros_(self.deinstruction_shift.bias)
-        self.instruct_label  = config.instruct_label
-        self.data_label      = config.data_label
-        self.shift_tap       = torch.nn.Identity()
-        self._warned_empty_data = False  # one-time silent-segmentation guard
-        self._router_logits_buffer = []
-        self._hooks_attached = False
-        self.post_init()
-
-    def _has_delimiter_config(self) -> bool:
-        return (
-            getattr(self.config, 'data_delm_ids', None) is not None
-            and getattr(self.config, 'response_delm_ids', None) is not None
-        )
-
-    def _auto_expert_labels(
-        self,
-        input_ids: Optional[torch.LongTensor],
-    ) -> Optional[torch.LongTensor]:
-        if input_ids is None or not self._has_delimiter_config():
-            return None
-        return compute_expert_labels_from_input_ids(
-            input_ids=input_ids,
-            data_delm_ids=self.config.data_delm_ids,
-            response_delm_ids=self.config.response_delm_ids,
-            inst_delm_ids=getattr(self.config, 'inst_delm_ids', None),
-            num_labels=getattr(self.config, 'num_labels', 4),
-        )
-
-    def _attach_router_hooks(self):
-        """Register forward hooks on every MoE sparse block to capture router_logits."""
-        if self._hooks_attached:
-            return
-
-        def make_hook(layer_idx):
-            def hook(module, inputs, output):
-                # Qwen3MoeSparseMoeBlock returns (final_hidden_states, router_logits)
-                if isinstance(output, tuple) and len(output) >= 2:
-                    self._router_logits_buffer.append(output[1])
-
-            return hook
-
-        for i, layer in enumerate(self.layers):
-            # In Qwen3-MoE, layer.mlp is Qwen3MoeSparseMoeBlock for MoE layers
-            mlp = getattr(layer, "mlp", None)
-            if mlp is not None and "Sparse" in type(mlp).__name__:
-                mlp.register_forward_hook(make_hook(i))
-        self._hooks_attached = True
-
-    def forward(
-        self,
-        input_ids=None,
-        expert_labels=None,
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        cache_position=None,
-        use_cache=None,
-        output_router_logits=None,
-        **kwargs,
-    ):
-        if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-
-        output_router_logits = (
-            output_router_logits if output_router_logits is not None
-            else self.config.output_router_logits
-        )
-
-        if use_cache and past_key_values is None:
-            past_key_values = DynamicCache()
-
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
-
-        if cache_position is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-            cache_position = torch.arange(
-                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
-            )
-        if position_ids is None:
-            position_ids = cache_position.unsqueeze(0)
-
-        mask_function = create_causal_mask if self.config.sliding_window is None else create_sliding_window_causal_mask
-        causal_mask = mask_function(
-            config=self.config,
-            input_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            cache_position=cache_position,
-            past_key_values=past_key_values,
-            position_ids=position_ids,
-        )
-
-        hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
-        if expert_labels is None:
-            expert_labels = self._auto_expert_labels(input_ids)
-
-        # Setup router_logits collection
-        if output_router_logits:
-            self._attach_router_hooks()
-            self._router_logits_buffer = []   # reset per forward call
-
-        for layer_idx, decoder_layer in enumerate(self.layers[:self.config.num_hidden_layers]):
-            # De-instruction shift (disabled by default for MoE; gated by config.bit_flip).
-            if self.config.bit_flip and layer_idx == 0 and expert_labels is not None:
-                data_mask_2d = (expert_labels == self.data_label)
-                if (not self._warned_empty_data) and hidden_states.shape[1] > 1 and not bool(data_mask_2d.any()):
-                    logger.warning(
-                        "DRIP: no tokens were labeled as data (data_label=%d); the de-instruction "
-                        "shift is a no-op for this input. Check that the prompt's data delimiter "
-                        "matches config.data_delm_ids.", self.data_label
-                    )
-                    self._warned_empty_data = True
-                data_mask_3d = data_mask_2d.unsqueeze(-1).expand_as(hidden_states)
-                shifts = self.deinstruction_shift(hidden_states)
-                hidden_states = torch.where(data_mask_3d, shifts + hidden_states, hidden_states)
-
-            hidden_states = self.shift_tap(hidden_states)
-            hidden_states = decoder_layer(
-                hidden_states,
-                position_embeddings=position_embeddings,
-                attention_mask=causal_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_values,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-
-        hidden_states = self.norm(hidden_states)
-
-        router_logits_out = tuple(self._router_logits_buffer) if output_router_logits else None
-
-        return MoeModelOutputWithPast(
-            last_hidden_state=hidden_states,
-            past_key_values=past_key_values,
-            router_logits=router_logits_out,
-        )
-
-
 class Qwen3MoeForCausalLMDRIP(transformers.Qwen3MoeForCausalLM):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
@@ -197,8 +48,6 @@ class Qwen3MoeForCausalLMDRIP(transformers.Qwen3MoeForCausalLM):
 
     def __init__(self, config: Qwen3MoeDRIPConfig):
         super().__init__(config)
-        del self.model
-        self.model           = Qwen3MoeModel(config)
         self.vocab_size      = config.vocab_size
         self.hidden_size     = config.hidden_size
         self.residual_weight = nn.Parameter(torch.tensor([0.0]))
@@ -273,7 +122,7 @@ class Qwen3MoeForCausalLMDRIP(transformers.Qwen3MoeForCausalLM):
                 first_resp_indices = _get_last_segment_start(self.response_label, expert_labels)
                 # Last token of the response delimiter = first + (delimiter_length - 1)
                 resp_delm_len = len(self.config.response_delm_ids)  # stored in config
-                end_indices = (first_resp_indices + resp_delm_len - 1).clamp(max=expert_labels.shape[1] - 1)
+                end_indices = (first_resp_indices + resp_delm_len).clamp(max=expert_labels.shape[1] - 1)
                 end_state   = hidden_states[batch_idx, end_indices]  # (B, H)
 
                 # Add last instruction token's semantic as a residual connection to the 1st response token
